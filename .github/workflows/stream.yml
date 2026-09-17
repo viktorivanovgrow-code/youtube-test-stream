@@ -60,8 +60,9 @@ jobs:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
 
-          echo "Current Action will run for 10 minutes."
+          echo "Current Action will run for 8 minutes."
           echo "Next Action will start after 8 minutes."
+          echo "Overlap will be 15 seconds."
 
           sleep 480
 
@@ -78,9 +79,9 @@ jobs:
 
           echo "Next Action successfully started."
 
-          echo "Keeping current FFmpeg alive for another 2 minutes..."
+          echo "Keeping current FFmpeg alive for another 15 seconds..."
 
-          sleep 120
+          sleep 15
 
-          echo "10 minutes completed."
+          echo "15 seconds overlap completed."
           echo "Current Action is finishing."
