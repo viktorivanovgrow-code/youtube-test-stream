@@ -11,30 +11,142 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # INSTALL FFMPEG
+      # ============================================================
+
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Download playlist videos
+      # ============================================================
+      # DOWNLOAD BOTH VIDEOS
+      # ============================================================
+
+      - name: Download videos
         run: |
 
-          wget -O video1.mp4 \
-          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
+          echo "Starting downloads..."
 
-          wget -O video2.mp4 \
-          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/test-video-2.mp4"
+          wget -O video1_source.mp4 \
+          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4" &
 
-          echo "Downloaded files:"
-          ls -lh video1.mp4 video2.mp4
+          PID1=$!
+
+          wget -O video2_source.mp4 \
+          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/test-video-2.mp4" &
+
+          PID2=$!
+
+          wait $PID1
+          wait $PID2
+
+          echo "Both videos downloaded."
+
+          ls -lh video1_source.mp4
+          ls -lh video2_source.mp4
+
+      # ============================================================
+      # SHOW SOURCE PARAMETERS
+      # ============================================================
+
+      - name: Inspect source videos
+        run: |
+
+          echo "===== VIDEO 1 ====="
+
+          ffprobe \
+            -v error \
+            -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,pix_fmt,sample_rate,channels,channel_layout,bit_rate \
+            -of default=noprint_wrappers=1 \
+            video1_source.mp4
+
+          echo ""
+          echo "===== VIDEO 2 ====="
+
+          ffprobe \
+            -v error \
+            -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,pix_fmt,sample_rate,channels,channel_layout,bit_rate \
+            -of default=noprint_wrappers=1 \
+            video2_source.mp4
+
+      # ============================================================
+      # NORMALIZE VIDEO 1
+      # ============================================================
+
+      - name: Normalize video 1
+        run: |
+
+          ffmpeg \
+            -y \
+            -i video1_source.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0? \
+            -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=25" \
+            -c:v libx264 \
+            -preset ultrafast \
+            -tune zerolatency \
+            -b:v 4000k \
+            -maxrate 4000k \
+            -bufsize 8000k \
+            -pix_fmt yuv420p \
+            -g 50 \
+            -keyint_min 50 \
+            -sc_threshold 0 \
+            -c:a aac \
+            -b:a 320k \
+            -ar 44100 \
+            -ac 2 \
+            -movflags +faststart \
+            video1.mp4
+
+      # ============================================================
+      # NORMALIZE VIDEO 2
+      # ============================================================
+
+      - name: Normalize video 2
+        run: |
+
+          ffmpeg \
+            -y \
+            -i video2_source.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0? \
+            -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=25" \
+            -c:v libx264 \
+            -preset ultrafast \
+            -tune zerolatency \
+            -b:v 4000k \
+            -maxrate 4000k \
+            -bufsize 8000k \
+            -pix_fmt yuv420p \
+            -g 50 \
+            -keyint_min 50 \
+            -sc_threshold 0 \
+            -c:a aac \
+            -b:a 320k \
+            -ar 44100 \
+            -ac 2 \
+            -movflags +faststart \
+            video2.mp4
+
+      # ============================================================
+      # CREATE PLAYLIST
+      # ============================================================
 
       - name: Create playlist
         run: |
+
           printf "file '%s'\n" "$PWD/video1.mp4" > playlist.txt
           printf "file '%s'\n" "$PWD/video2.mp4" >> playlist.txt
 
-          echo "Playlist:"
+          echo "===== PLAYLIST ====="
           cat playlist.txt
+
+      # ============================================================
+      # START FFMPEG
+      # ============================================================
 
       - name: Start FFmpeg
         env:
@@ -59,7 +171,10 @@ jobs:
             -g 50 \
             -keyint_min 50 \
             -sc_threshold 0 \
-            -c:a copy \
+            -c:a aac \
+            -b:a 320k \
+            -ar 44100 \
+            -ac 2 \
             -f flv \
             "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
             > ffmpeg.log 2>&1 &
@@ -67,23 +182,30 @@ jobs:
           echo $! > ffmpeg.pid
 
           echo "FFmpeg started."
-          sleep 2
 
+          sleep 3
+
+          echo "===== FFMPEG LOG ====="
           cat ffmpeg.log
+
+      # ============================================================
+      # START NEXT ACTION
+      # ============================================================
 
       - name: Keep stream running and start next Action
         env:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
 
-          echo "Current Action will run for 15 minutes."
-          echo "Next Action will start after 13 minutes."
-          echo "RTMP overlap will be 2 minutes."
+          echo "Current Action timeout: 15 minutes."
+          echo "Next Action will start after 12 minutes."
+          echo "Target overlap: approximately 2 minutes."
+          echo "Safety margin before GitHub timeout: approximately 1 minute."
 
-          sleep 780
+          sleep 720
 
-          echo "13 minutes passed."
-          echo "Starting next instance of the same workflow..."
+          echo "12 minutes passed."
+          echo "Starting next instance..."
 
           curl --fail-with-body -L \
             -X POST \
@@ -99,5 +221,4 @@ jobs:
 
           sleep 120
 
-          echo "15 minutes completed."
-          echo "Current Action is finishing."
+          echo "Current Action completed."
