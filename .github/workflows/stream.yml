@@ -1,34 +1,39 @@
 name: 24/7 YouTube Stream
 
 on:
-  schedule:
-    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
   stream:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
-    - name: Install FFmpeg
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
+      - name: Start YouTube Stream
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          echo "=== STARTING YOUTUBE STREAM ==="
 
-    - name: Download Video and Start Streaming
-      run: |
-        echo "=== СКАЧИВАНИЕ ВИДЕО ==="
-        # ВНИМАТЕЛЬНО ВСТАВЬТЕ ССЫЛКУ С СЛОВОМ RESOLVE ВНУТРЬ КАВЫЧЕК:
-        curl -L -o input.mp4 "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
-        
-        echo "=== ПРОВЕРКА РАЗМЕРА ФАЙЛА ==="
-        ls -lh input.mp4
-        
-        echo "=== ЗАПУСК ТРАНСЛЯЦИИ НА YOUTUBE ==="
-        # ВСТАВЬТЕ ВАШ КЛЮЧ ТРАНСЛЯЦИИ ВМЕСТО СЛОВ: macp-kg7e-y7s8-asb0-ae3v
-        timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
-          -c:v copy -c:a copy \
-          -f flv "rtmp://://youtube.com"
+          ffmpeg \
+            -re \
+            -stream_loop -1 \
+            -i "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4" \
+            -c:v libx264 \
+            -preset veryfast \
+            -b:v 4500k \
+            -maxrate 4500k \
+            -bufsize 9000k \
+            -pix_fmt yuv420p \
+            -r 30 \
+            -g 60 \
+            -c:a aac \
+            -b:a 192k \
+            -ar 48000 \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
