@@ -7,7 +7,7 @@ jobs:
   stream:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 12
+    timeout-minutes: 6
 
     steps:
 
@@ -60,13 +60,13 @@ jobs:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
 
-          echo "Current Action will run for 8 minutes."
-          echo "Next Action will start after 8 minutes."
-          echo "Overlap will be 15 seconds."
+          echo "Current Action will run for 6 minutes."
+          echo "Next Action will start after 4 minutes."
+          echo "RTMP overlap will be 2 minutes."
 
-          sleep 480
+          sleep 240
 
-          echo "8 minutes passed."
+          echo "4 minutes passed."
           echo "Starting next instance of the same workflow..."
 
           curl --fail-with-body -L \
@@ -79,9 +79,9 @@ jobs:
 
           echo "Next Action successfully started."
 
-          echo "Keeping current FFmpeg alive for another 15 seconds..."
+          echo "Keeping current FFmpeg alive for another 2 minutes..."
 
-          sleep 15
+          sleep 120
 
-          echo "15 seconds overlap completed."
+          echo "6 minutes completed."
           echo "Current Action is finishing."
