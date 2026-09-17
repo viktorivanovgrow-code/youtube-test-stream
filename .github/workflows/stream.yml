@@ -2,9 +2,9 @@ name: 24/7 YouTube Stream
 
 on:
   schedule:
-    # Перезапуск каждые 5 часов
+    # Автоматический перезапуск каждые 5 часов
     - cron: '0 */5 * * *'
-  workflow_dispatch: # Позволяет запускать вручную кнопкой
+  workflow_dispatch: # Позволяет запускать стрим вручную кнопкой
 
 jobs:
   stream:
@@ -21,7 +21,7 @@ jobs:
 
     - name: Download Video and Start Streaming
       env:
-        # Чтение напрямую из глобальных секретов
+        # Чтение ключа из созданного вами секретного раздела
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         # Ссылка на ваше видео с Hugging Face
         VIDEO_URL: "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
@@ -33,7 +33,7 @@ jobs:
         ls -lh input.mp4
         
         echo "=== ЗАПУСК ТРАНСЛЯЦИИ НА YOUTUBE ==="
-        # Запускаем стрим в бесконечном цикле без перекодирования
+        # Прямая и точная строка вещания RTMP без лишних символов
         timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
           -c:v copy -c:a copy \
-          -f flv "rtmp://://youtube.com"
+          -f flv rtmp://://youtube.com
