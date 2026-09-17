@@ -7,7 +7,7 @@ jobs:
   stream:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
 
@@ -24,20 +24,32 @@ jobs:
 
 
       # ----------------------------------------
-      # 2. Download both videos
+      # 2. Download both videos in parallel
       # ----------------------------------------
 
       - name: Download videos
         run: |
+          echo "Downloading both videos..."
+
+          START=$(date +%s)
+
           wget -O video1_source.mp4 \
           "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4" &
+
+          PID1=$!
 
           wget -O video2_source.mp4 \
           "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/test-video-2.mp4" &
 
-          wait
+          PID2=$!
+
+          wait $PID1
+          wait $PID2
+
+          END=$(date +%s)
 
           echo "Downloads completed."
+          echo "Download time: $((END-START)) seconds."
 
           ls -lh video1_source.mp4
           ls -lh video2_source.mp4
@@ -49,6 +61,10 @@ jobs:
 
       - name: Normalize video 1
         run: |
+          echo "Normalizing video 1..."
+
+          START=$(date +%s)
+
           ffmpeg \
             -y \
             -i video1_source.mp4 \
@@ -70,6 +86,10 @@ jobs:
             -movflags +faststart \
             video1.mp4
 
+          END=$(date +%s)
+
+          echo "Video 1 normalization time: $((END-START)) seconds."
+
 
       # ----------------------------------------
       # 4. Normalize VIDEO 2
@@ -77,6 +97,10 @@ jobs:
 
       - name: Normalize video 2
         run: |
+          echo "Normalizing video 2..."
+
+          START=$(date +%s)
+
           ffmpeg \
             -y \
             -i video2_source.mp4 \
@@ -98,6 +122,10 @@ jobs:
             -movflags +faststart \
             video2.mp4
 
+          END=$(date +%s)
+
+          echo "Video 2 normalization time: $((END-START)) seconds."
+
 
       # ----------------------------------------
       # 5. Create playlist
@@ -108,15 +136,20 @@ jobs:
           echo "file 'video1.mp4'" > playlist.txt
           echo "file 'video2.mp4'" >> playlist.txt
 
+          echo "Playlist:"
           cat playlist.txt
 
 
       # ----------------------------------------
-      # 6. Join videos into ONE MP4
+      # 6. Create ONE combined MP4
       # ----------------------------------------
 
       - name: Build playlist MP4
         run: |
+          echo "Building combined playlist..."
+
+          START=$(date +%s)
+
           ffmpeg \
             -y \
             -f concat \
@@ -126,7 +159,13 @@ jobs:
             -movflags +faststart \
             playlist.mp4
 
+          END=$(date +%s)
+
+          echo "Playlist creation time: $((END-START)) seconds."
+
           ls -lh playlist.mp4
+
+          echo "Playlist duration:"
 
           ffprobe \
             -v error \
@@ -136,17 +175,27 @@ jobs:
 
 
       # ----------------------------------------
-      # 7. Start ONE continuous RTMP stream
+      # 7. Start FFmpeg / YouTube
       # ----------------------------------------
 
       - name: Start YouTube stream
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
-          echo "Starting continuous playlist stream..."
-          echo "Playlist: video1 -> video2 -> video1 -> video2..."
+          echo "=========================================="
+          echo "Starting YouTube stream"
+          echo "=========================================="
+          echo "Playlist:"
+          echo "VIDEO 1 -> VIDEO 2 -> VIDEO 1 -> VIDEO 2..."
+          echo ""
           echo "One FFmpeg process."
           echo "One RTMP connection."
+          echo "Infinite playlist loop."
+          echo ""
+          echo "Current Action lifetime: 30 minutes."
+          echo "Next Action starts after: 22 minutes."
+          echo "Maximum planned overlap: 8 minutes."
+          echo "=========================================="
 
           ffmpeg \
             -re \
@@ -166,4 +215,54 @@ jobs:
             -sc_threshold 0 \
             -c:a copy \
             -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          FFMPEG_PID=$!
+
+          echo "FFmpeg PID: ${FFMPEG_PID}"
+
+          sleep 5
+
+          echo "Initial FFmpeg log:"
+          cat ffmpeg.log
+
+
+      # ----------------------------------------
+      # 8. Start next Action after 22 minutes
+      # ----------------------------------------
+
+      - name: Start next Action
+        env:
+          GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
+        run: |
+
+          echo "=========================================="
+          echo "Current Action: 30 minutes"
+          echo "Next Action: starts after 22 minutes"
+          echo "=========================================="
+
+          sleep 1320
+
+          echo "22 minutes passed."
+          echo "Starting next Action..."
+
+          curl --fail-with-body -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_RESTART_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/stream.yml/dispatches" \
+            -d '{"ref":"main"}'
+
+          echo ""
+          echo "Next Action successfully started."
+          echo ""
+          echo "Current Action continues running."
+          echo "It will finish at approximately 30 minutes."
+
+          sleep 480
+
+          echo ""
+          echo "30 minutes completed."
+          echo "Current Action is finishing."
