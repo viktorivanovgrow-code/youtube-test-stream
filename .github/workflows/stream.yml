@@ -22,21 +22,18 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # ВАША ОРИГИНАЛЬНАЯ ССЫЛКА:
-        ORIGINAL_URL: "https://www.dropbox.com/scl/fi/81la8lrpq116d1ipwqzv6/TEST-STEAR.mp4?rlkey=m72y4tjna6ckokpjt4r3h6t0r&st=6o7i37iu&dl=0"
+        # ЗАМЕНИТЕ ТЕКСТ НИЖЕ НА ВАШ ID ИЗ GOOGLE ДИСКА:
+        GOOGLE_DRIVE_ID: "1N7l2CCjQO97lxPzbYgG3qbeGfIjoecYk"
       run: |
-        echo "=== ПОДГОТОВКА ССЫЛКИ ==="
-        # Скрипт автоматически преобразует вашу ссылку в прямой поток для скачивания
-        VIDEO_URL=$(echo "$ORIGINAL_URL" | sed 's/://dropbox.com' | sed 's/&dl=0//')
-        
-        echo "=== СКАЧИВАНИЕ ВИДЕО ==="
-        curl -L -o input.mp4 "$VIDEO_URL"
+        echo "=== СКАЧИВАНИЕ ВИДЕО С GOOGLE DRIVE ==="
+        # Безопасное скачивание файла любого размера через API Google Drive
+        curl -L "https://google.com" -o input.mp4
         
         echo "=== ПРОВЕРКА РАЗМЕРА ФАЙЛА ==="
         ls -lh input.mp4
         
         if [ ! -s input.mp4 ]; then
-          echo "Ошибка: Файл пустой, скачивание сорвалось!"
+          echo "Ошибка: Не удалось скачать файл с Google Диска!"
           exit 1
         fi
         
