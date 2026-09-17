@@ -21,13 +21,13 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       # ============================================================
-      # DOWNLOAD BOTH VIDEOS
+      # DOWNLOAD BOTH FILES IN PARALLEL
       # ============================================================
 
       - name: Download videos
         run: |
 
-          echo "Starting downloads..."
+          echo "Downloading video 1 and video 2..."
 
           wget -O video1_source.mp4 \
           "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4" &
@@ -42,34 +42,10 @@ jobs:
           wait $PID1
           wait $PID2
 
-          echo "Both videos downloaded."
+          echo "Both files downloaded."
 
           ls -lh video1_source.mp4
           ls -lh video2_source.mp4
-
-      # ============================================================
-      # SHOW SOURCE PARAMETERS
-      # ============================================================
-
-      - name: Inspect source videos
-        run: |
-
-          echo "===== VIDEO 1 ====="
-
-          ffprobe \
-            -v error \
-            -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,pix_fmt,sample_rate,channels,channel_layout,bit_rate \
-            -of default=noprint_wrappers=1 \
-            video1_source.mp4
-
-          echo ""
-          echo "===== VIDEO 2 ====="
-
-          ffprobe \
-            -v error \
-            -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,pix_fmt,sample_rate,channels,channel_layout,bit_rate \
-            -of default=noprint_wrappers=1 \
-            video2_source.mp4
 
       # ============================================================
       # NORMALIZE VIDEO 1
@@ -132,80 +108,106 @@ jobs:
             video2.mp4
 
       # ============================================================
-      # CREATE PLAYLIST
+      # START INFINITE VIDEO LOOP
       # ============================================================
 
-      - name: Create playlist
-        run: |
-
-          printf "file '%s'\n" "$PWD/video1.mp4" > playlist.txt
-          printf "file '%s'\n" "$PWD/video2.mp4" >> playlist.txt
-
-          echo "===== PLAYLIST ====="
-          cat playlist.txt
-
-      # ============================================================
-      # START FFMPEG
-      # ============================================================
-
-      - name: Start FFmpeg
+      - name: Start FFmpeg loop
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
 
-          ffmpeg \
-            -re \
-            -fflags +genpts \
-            -stream_loop -1 \
-            -f concat \
-            -safe 0 \
-            -i playlist.txt \
-            -r 25 \
-            -c:v libx264 \
-            -preset ultrafast \
-            -tune zerolatency \
-            -b:v 4000k \
-            -maxrate 4000k \
-            -bufsize 8000k \
-            -pix_fmt yuv420p \
-            -g 50 \
-            -keyint_min 50 \
-            -sc_threshold 0 \
-            -c:a aac \
-            -b:a 320k \
-            -ar 44100 \
-            -ac 2 \
-            -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
-            > ffmpeg.log 2>&1 &
+          echo "Starting infinite playlist:"
+          echo "VIDEO 1 → VIDEO 2 → VIDEO 1 → VIDEO 2 → ..."
+
+          (
+            while true
+            do
+
+              echo "========================================"
+              echo "Starting VIDEO 1"
+              echo "========================================"
+
+              ffmpeg \
+                -re \
+                -fflags +genpts \
+                -i video1.mp4 \
+                -r 25 \
+                -c:v libx264 \
+                -preset ultrafast \
+                -tune zerolatency \
+                -b:v 4000k \
+                -maxrate 4000k \
+                -bufsize 8000k \
+                -pix_fmt yuv420p \
+                -g 50 \
+                -keyint_min 50 \
+                -sc_threshold 0 \
+                -c:a aac \
+                -b:a 320k \
+                -ar 44100 \
+                -ac 2 \
+                -f flv \
+                "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+
+              echo "VIDEO 1 finished."
+
+              echo "========================================"
+              echo "Starting VIDEO 2"
+              echo "========================================"
+
+              ffmpeg \
+                -re \
+                -fflags +genpts \
+                -i video2.mp4 \
+                -r 25 \
+                -c:v libx264 \
+                -preset ultrafast \
+                -tune zerolatency \
+                -b:v 4000k \
+                -maxrate 4000k \
+                -bufsize 8000k \
+                -pix_fmt yuv420p \
+                -g 50 \
+                -keyint_min 50 \
+                -sc_threshold 0 \
+                -c:a aac \
+                -b:a 320k \
+                -ar 44100 \
+                -ac 2 \
+                -f flv \
+                "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+
+              echo "VIDEO 2 finished."
+
+            done
+          ) > ffmpeg.log 2>&1 &
 
           echo $! > ffmpeg.pid
 
-          echo "FFmpeg started."
+          echo "FFmpeg loop started."
 
-          sleep 3
+          sleep 5
 
           echo "===== FFMPEG LOG ====="
-          cat ffmpeg.log
+          tail -50 ffmpeg.log
 
       # ============================================================
-      # START NEXT ACTION
+      # START NEXT ACTION AFTER 12 MINUTES
       # ============================================================
 
-      - name: Keep stream running and start next Action
+      - name: Start next Action
         env:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
 
           echo "Current Action timeout: 15 minutes."
           echo "Next Action will start after 12 minutes."
-          echo "Target overlap: approximately 2 minutes."
-          echo "Safety margin before GitHub timeout: approximately 1 minute."
+          echo "Target overlap: 2 minutes."
 
           sleep 720
 
           echo "12 minutes passed."
-          echo "Starting next instance..."
+          echo "Starting next Action..."
 
           curl --fail-with-body -L \
             -X POST \
@@ -217,7 +219,7 @@ jobs:
 
           echo "Next Action successfully started."
 
-          echo "Keeping current FFmpeg alive for another 2 minutes..."
+          echo "Keeping current Action alive for 2 more minutes..."
 
           sleep 120
 
