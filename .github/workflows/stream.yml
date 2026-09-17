@@ -22,27 +22,17 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # ВСТАВЬТЕ СЮДА ВАШ ID ИЗ GOOGLE ДИСКА
-        GOOGLE_DRIVE_ID: "1N7l2CCjQO97lxPzbYgG3qbeGfIjoecYk"
+        # ВСТАВЬТЕ СЮДА СКОПИРОВАННУЮ ССЫЛКУ С HUGGING FACE
+        VIDEO_URL: "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
       run: |
-        echo "=== СКАЧИВАНИЕ ТЯЖЕЛОГО ВИДЕО С GOOGLE DRIVE ==="
-        # Обход предупреждения Google Диска о большом размере файла
-        curl -c cookies.txt -s -L "https://google.com" > confirm.html
-        CONFIRM_CODE=$(grep -o 'confirm=[^&]*' confirm.html | head -n 1)
-        
-        if [ -n "$CONFIRM_CODE" ]; then
-          echo "Обнаружен код подтверждения: $CONFIRM_CODE. Скачиваем оригинал..."
-          curl -b cookies.txt -L "https://google.com" -o input.mp4
-        else
-          echo "Прямое скачивание без подтверждения..."
-          curl -L "https://google.com" -o input.mp4
-        fi
+        echo "=== СКАЧИВАНИЕ ВИДЕО ==="
+        curl -L -o input.mp4 "$VIDEO_URL"
         
         echo "=== ПРОВЕРКА РАЗМЕРА ФАЙЛА ==="
         ls -lh input.mp4
         
-        if [ $(stat -c%s input.mp4) -lt 1000000 ]; then
-          echo "Ошибка: Файл подозрительно маленький (меньше 1 МБ). Стрим не запустится."
+        if [ ! -s input.mp4 ]; then
+          echo "Ошибка: Файл пустой, скачивание сорвалось!"
           exit 1
         fi
         
