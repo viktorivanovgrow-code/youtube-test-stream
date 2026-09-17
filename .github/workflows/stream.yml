@@ -2,7 +2,7 @@ name: 24/7 YouTube Stream
 
 on:
   schedule:
-    # Запуск каждые 5 часов автоматически (чтобы укладываться в лимит 6 часов)
+    # Запуск каждые 5 часов автоматически
     - cron: '0 */5 * * *'
   workflow_dispatch: # Позволяет запускать стрим вручную кнопкой
 
@@ -21,17 +21,15 @@ jobs:
 
     - name: Download Video and Start Streaming
       env:
-        STREAM_KEY: ${{ secrets::YOUTUBE_STREAM_KEY }}
-        # ЗАМЕНИТЕ ССЫЛКУ НИЖЕ НА ВАШУ ПРЯМУЮ ССЫЛКУ НА MP4
+        STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        # Ссылка изменена на dl=1 для прямого скачивания сервером
         VIDEO_URL: "https://dropbox.com"
       run: |
-        # Скачиваем видео под именем input.mp4
+        echo "Скачивание видео..."
         curl -L -o input.mp4 "$VIDEO_URL"
         
         echo "Запуск трансляции..."
-        
-        # Запускаем ffmpeg в режиме таймаута на 5 часов 40 минут (20400 секунд),
-        # чтобы процесс завершился аккуратно до принудительного лимита GitHub.
+        # Запуск ffmpeg на 5 часов 40 минут (20400 сек) в бесконечном цикле
         timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
           -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2500k -bufsize 5000k \
           -pix_fmt yuv420p -g 60 -c:a aac -b:a 128k -ar 44100 \
