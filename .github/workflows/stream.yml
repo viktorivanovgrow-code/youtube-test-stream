@@ -22,7 +22,7 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # СЮДА ВСТАВЛЕНА ВАША ССЫЛКА С HUGGING FACE
+        # НЕ ЗАБУДЬТЕ ВСТАВИТЬ ВАШУ ССЫЛКУ С HUGGING FACE НИЖЕ:
         VIDEO_URL: "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
       run: |
         echo "=== СКАЧИВАНИЕ ВИДЕО ==="
@@ -36,9 +36,11 @@ jobs:
           exit 1
         fi
         
-        echo "=== ЗАПУСК ТРАНСЛЯЦИИ НА YOUTUBE ==="
-        # Запуск трансляции через защищенный протокол RTMPS на 5 часов 40 минут
+        echo "=== ЗАПУСК ПЕРЕКОДИРОВАНИЯ И ТРАНСЛЯЦИИ НА YOUTUBE ==="
+        # Принудительно пережимаем видео в стандартный HD-формат 720p 30fps
+        # Это исправляет любые ошибки кодеков исходного файла
         timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
-          -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2500k -bufsize 5000k \
-          -pix_fmt yuv420p -g 60 -c:a aac -b:a 128k -ar 44100 \
-          -tls_verify 1 -f flv "rtmps://://youtube.com"
+          -c:v libx264 -preset ultrafast -b:v 2000k -maxrate 2000k -bufsize 4000k \
+          -vf "scale=1280:720,fps=30,format=yuv420p" -g 60 \
+          -c:a aac -b:a 128k -ar 44100 \
+          -f flv "rtmps://://youtube.com"
