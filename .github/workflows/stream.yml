@@ -1,4 +1,4 @@
-name: 24/7 YouTube Stream
+name: YouTube Stream
 
 on:
   workflow_dispatch:
@@ -14,26 +14,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
+      - name: Download video
+        run: |
+          wget -O video.mp4 \
+          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
+
+          ls -lh video.mp4
+
       - name: Start YouTube Stream
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
-          echo "=== STARTING YOUTUBE STREAM ==="
-
           ffmpeg \
             -re \
             -stream_loop -1 \
-            -i "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4" \
-            -c:v libx264 \
-            -preset veryfast \
-            -b:v 4500k \
-            -maxrate 4500k \
-            -bufsize 9000k \
-            -pix_fmt yuv420p \
-            -r 30 \
-            -g 60 \
-            -c:a aac \
-            -b:a 192k \
-            -ar 48000 \
+            -i video.mp4 \
+            -c:v copy \
+            -c:a copy \
             -f flv \
             "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
