@@ -29,8 +29,10 @@ jobs:
         run: |
           ffmpeg \
             -re \
+            -fflags +genpts \
             -stream_loop -1 \
             -i video.mp4 \
+            -r 25 \
             -c:v libx264 \
             -preset ultrafast \
             -tune zerolatency \
@@ -41,10 +43,7 @@ jobs:
             -g 50 \
             -keyint_min 50 \
             -sc_threshold 0 \
-            -c:a aac \
-            -b:a 320k \
-            -ar 44100 \
-            -ac 2 \
+            -c:a copy \
             -f flv \
             "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
             > ffmpeg.log 2>&1 &
