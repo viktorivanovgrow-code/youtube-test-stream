@@ -6,7 +6,8 @@ on:
 jobs:
   stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+
+    timeout-minutes: 12
 
     steps:
 
@@ -22,7 +23,7 @@ jobs:
 
           ls -lh video.mp4
 
-      - name: Start YouTube Stream
+      - name: Start FFmpeg
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
@@ -42,13 +43,27 @@ jobs:
             -sc_threshold 0 \
             -c:a copy \
             -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
 
-      - name: Restart same Action
-        if: always()
+          echo $! > ffmpeg.pid
+
+          echo "FFmpeg started."
+          sleep 2
+
+          cat ffmpeg.log
+
+      - name: Keep stream running and start next Action
         env:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
+
+          echo "Current Action will run for 10 minutes."
+          echo "Next Action will start after 8 minutes."
+
+          sleep 480
+
+          echo "8 minutes passed."
           echo "Starting next instance of the same workflow..."
 
           curl --fail-with-body -L \
@@ -59,4 +74,11 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/stream.yml/dispatches" \
             -d '{"ref":"main"}'
 
-          echo "Next instance successfully requested."
+          echo "Next Action successfully started."
+
+          echo "Keeping current FFmpeg alive for another 2 minutes..."
+
+          sleep 120
+
+          echo "10 minutes completed."
+          echo "Current Action is finishing."
