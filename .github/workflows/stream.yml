@@ -22,18 +22,27 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # ЗАМЕНИТЕ ТЕКСТ НИЖЕ НА ВАШ ID ИЗ GOOGLE ДИСКА:
+        # ВСТАВЬТЕ СЮДА ВАШ ID ИЗ GOOGLE ДИСКА
         GOOGLE_DRIVE_ID: "1N7l2CCjQO97lxPzbYgG3qbeGfIjoecYk"
       run: |
-        echo "=== СКАЧИВАНИЕ ВИДЕО С GOOGLE DRIVE ==="
-        # Безопасное скачивание файла любого размера через API Google Drive
-        curl -L "https://google.com" -o input.mp4
+        echo "=== СКАЧИВАНИЕ ТЯЖЕЛОГО ВИДЕО С GOOGLE DRIVE ==="
+        # Обход предупреждения Google Диска о большом размере файла
+        curl -c cookies.txt -s -L "https://google.com" > confirm.html
+        CONFIRM_CODE=$(grep -o 'confirm=[^&]*' confirm.html | head -n 1)
+        
+        if [ -n "$CONFIRM_CODE" ]; then
+          echo "Обнаружен код подтверждения: $CONFIRM_CODE. Скачиваем оригинал..."
+          curl -b cookies.txt -L "https://google.com" -o input.mp4
+        else
+          echo "Прямое скачивание без подтверждения..."
+          curl -L "https://google.com" -o input.mp4
+        fi
         
         echo "=== ПРОВЕРКА РАЗМЕРА ФАЙЛА ==="
         ls -lh input.mp4
         
-        if [ ! -s input.mp4 ]; then
-          echo "Ошибка: Не удалось скачать файл с Google Диска!"
+        if [ $(stat -c%s input.mp4) -lt 1000000 ]; then
+          echo "Ошибка: Файл подозрительно маленький (меньше 1 МБ). Стрим не запустится."
           exit 1
         fi
         
