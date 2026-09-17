@@ -2,7 +2,7 @@ name: 24/7 YouTube Stream
 
 on:
   schedule:
-    # Запуск каждые 5 часов автоматически
+    # Автоматический перезапуск каждые 5 часов
     - cron: '0 */5 * * *'
   workflow_dispatch: # Позволяет запускать стрим вручную кнопкой
 
@@ -22,8 +22,8 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # Ссылка изменена на dl=1 для прямого скачивания сервером
-        VIDEO_URL: "https://dropbox.com"
+        # Сюда вставлена именно ВАША ссылка с заменой на dl=1
+        VIDEO_URL: "https://www.dropbox.com/scl/fi/81la8lrpq116d1ipwqzv6/TEST-STEAR.mp4?rlkey=m72y4tjna6ckokpjt4r3h6t0r&st=6o7i37iu&dl=1"
       run: |
         echo "Скачивание видео..."
         curl -L -o input.mp4 "$VIDEO_URL"
