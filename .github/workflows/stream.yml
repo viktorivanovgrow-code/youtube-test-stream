@@ -7,7 +7,7 @@ jobs:
   stream:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 6
+    timeout-minutes: 15
 
     steps:
 
@@ -16,22 +16,38 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Download video
+      - name: Download playlist videos
         run: |
-          wget -O video.mp4 \
+
+          wget -O video1.mp4 \
           "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
 
-          ls -lh video.mp4
+          wget -O video2.mp4 \
+          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/test-video-2.mp4"
+
+          echo "Downloaded files:"
+          ls -lh video1.mp4 video2.mp4
+
+      - name: Create playlist
+        run: |
+          printf "file '%s'\n" "$PWD/video1.mp4" > playlist.txt
+          printf "file '%s'\n" "$PWD/video2.mp4" >> playlist.txt
+
+          echo "Playlist:"
+          cat playlist.txt
 
       - name: Start FFmpeg
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
+
           ffmpeg \
             -re \
             -fflags +genpts \
             -stream_loop -1 \
-            -i video.mp4 \
+            -f concat \
+            -safe 0 \
+            -i playlist.txt \
             -r 25 \
             -c:v libx264 \
             -preset ultrafast \
@@ -60,13 +76,13 @@ jobs:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
 
-          echo "Current Action will run for 6 minutes."
-          echo "Next Action will start after 4 minutes."
+          echo "Current Action will run for 15 minutes."
+          echo "Next Action will start after 13 minutes."
           echo "RTMP overlap will be 2 minutes."
 
-          sleep 240
+          sleep 780
 
-          echo "4 minutes passed."
+          echo "13 minutes passed."
           echo "Starting next instance of the same workflow..."
 
           curl --fail-with-body -L \
@@ -83,5 +99,5 @@ jobs:
 
           sleep 120
 
-          echo "6 minutes completed."
+          echo "15 minutes completed."
           echo "Current Action is finishing."
