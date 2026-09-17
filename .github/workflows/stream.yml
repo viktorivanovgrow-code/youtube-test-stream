@@ -6,7 +6,8 @@ on:
 jobs:
   stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+
+    timeout-minutes: 12
 
     steps:
 
@@ -37,14 +38,10 @@ jobs:
             -maxrate 6000k \
             -bufsize 12000k \
             -pix_fmt yuv420p \
-            -r 25 \
             -g 50 \
             -keyint_min 50 \
             -sc_threshold 0 \
-            -c:a aac \
-            -b:a 320k \
-            -ar 44100 \
-            -ac 2 \
+            -c:a copy \
             -f flv \
             "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
             > ffmpeg.log 2>&1 &
@@ -52,19 +49,22 @@ jobs:
           echo $! > ffmpeg.pid
 
           echo "FFmpeg started."
+          sleep 2
 
-      - name: Wait 2 minutes 45 seconds
-        run: |
-          echo "Current FFmpeg is running."
-          echo "Next Action will start after 2 minutes 45 seconds."
+          cat ffmpeg.log
 
-          sleep 165
-
-      - name: Start next Action
+      - name: Keep stream running and start next Action
         env:
           GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
         run: |
-          echo "Starting next instance..."
+
+          echo "Current Action will run for 10 minutes."
+          echo "Next Action will start after 8 minutes."
+
+          sleep 480
+
+          echo "8 minutes passed."
+          echo "Starting next instance of the same workflow..."
 
           curl --fail-with-body -L \
             -X POST \
@@ -76,17 +76,9 @@ jobs:
 
           echo "Next Action successfully started."
 
-      - name: Keep current FFmpeg for 15 seconds
-        run: |
-          echo "15-second overlap..."
-          sleep 15
+          echo "Keeping current FFmpeg alive for another 2 minutes..."
 
-      - name: Stop current FFmpeg
-        run: |
-          echo "Stopping current FFmpeg..."
+          sleep 120
 
-          kill $(cat ffmpeg.pid) || true
-
-          sleep 2
-
-          echo "Current Action finished."
+          echo "10 minutes completed."
+          echo "Current Action is finishing."
