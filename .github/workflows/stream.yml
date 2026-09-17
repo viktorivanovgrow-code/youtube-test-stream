@@ -22,14 +22,23 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # Сюда вставлена именно ВАША ссылка с заменой на dl=1
-        VIDEO_URL: "https://www.dropbox.com/scl/fi/81la8lrpq116d1ipwqzv6/TEST-STEAR.mp4?rlkey=m72y4tjna6ckokpjt4r3h6t0r&st=6o7i37iu&dl=1"
+        # Ваша ссылка пересобрана в прямой поток для серверов:
+        VIDEO_URL: "https://dropboxusercontent.com"
       run: |
-        echo "Скачивание видео..."
+        echo "=== СКАЧИВАНИЕ ВИДЕО ==="
+        # Скачиваем файл напрямую
         curl -L -o input.mp4 "$VIDEO_URL"
         
-        echo "Запуск трансляции..."
-        # Запуск ffmpeg на 5 часов 40 минут (20400 сек) в бесконечном цикле
+        echo "=== ПРОВЕРКА РАЗМЕРА ФАЙЛА ==="
+        ls -lh input.mp4
+        
+        if [ ! -s input.mp4 ]; then
+          echo "Ошибка: Файл пустой, скачивание сорвалось!"
+          exit 1
+        fi
+        
+        echo "=== ЗАПУСК ТРАНСЛЯЦИИ НА YOUTUBE ==="
+        # Запуск трансляции на 5 часов 40 минут в бесконечном цикле
         timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
           -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2500k -bufsize 5000k \
           -pix_fmt yuv420p -g 60 -c:a aac -b:a 128k -ar 44100 \
