@@ -22,7 +22,7 @@ jobs:
     - name: Download Video and Start Streaming
       env:
         STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        # ВСТАВЬТЕ СЮДА СКОПИРОВАННУЮ ССЫЛКУ С HUGGING FACE
+        # СЮДА ВСТАВЛЕНА ВАША ССЫЛКА С HUGGING FACE
         VIDEO_URL: "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
       run: |
         echo "=== СКАЧИВАНИЕ ВИДЕО ==="
@@ -37,7 +37,8 @@ jobs:
         fi
         
         echo "=== ЗАПУСК ТРАНСЛЯЦИИ НА YOUTUBE ==="
+        # Запуск трансляции через защищенный протокол RTMPS на 5 часов 40 минут
         timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
           -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2500k -bufsize 5000k \
           -pix_fmt yuv420p -g 60 -c:a aac -b:a 128k -ar 44100 \
-          -f flv "rtmp://://youtube.com"
+          -tls_verify 1 -f flv "rtmps://://youtube.com"
