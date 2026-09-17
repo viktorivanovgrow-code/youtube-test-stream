@@ -2,9 +2,8 @@ name: 24/7 YouTube Stream
 
 on:
   schedule:
-    # Перезапуск каждые 5 часов автоматически
     - cron: '0 */5 * * *'
-  workflow_dispatch: # Позволяет запускать стрим вручную кнопкой
+  workflow_dispatch:
 
 jobs:
   stream:
@@ -22,16 +21,14 @@ jobs:
     - name: Download Video and Start Streaming
       run: |
         echo "=== СКАЧИВАНИЕ ВИДЕО ==="
-        # Замените ссылку ниже на вашу прямую ссылку скачивания видео с Hugging Face
-        VIDEO_URL="ВСТАВЬТЕ_СЮДА_ВАШУ_ССЫЛКУ_DOWNLOAD"
-        curl -L -o input.mp4 "$VIDEO_URL"
+        # ВНИМАТЕЛЬНО ВСТАВЬТЕ ССЫЛКУ С СЛОВОМ RESOLVE ВНУТРЬ КАВЫЧЕК:
+        curl -L -o input.mp4 "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4"
         
         echo "=== ПРОВЕРКА РАЗМЕРА ФАЙЛА ==="
         ls -lh input.mp4
         
         echo "=== ЗАПУСК ТРАНСЛЯЦИИ НА YOUTUBE ==="
-        # ВСТАВЬТЕ ВАШ КЛЮЧ ТРАНСЛЯЦИИ ВМЕСТО СЛОВ: vash-kluch-iz-youtube
-        # Секретный ключ должен быть внутри кавычек сразу после live2/
+        # ВСТАВЬТЕ ВАШ КЛЮЧ ТРАНСЛЯЦИИ ВМЕСТО СЛОВ: macp-kg7e-y7s8-asb0-ae3v
         timeout 20400 ffmpeg -re -stream_loop -1 -i input.mp4 \
           -c:v copy -c:a copy \
           -f flv "rtmp://://youtube.com"
