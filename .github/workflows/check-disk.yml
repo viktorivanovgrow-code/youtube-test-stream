@@ -1,49 +1,9 @@
-```yaml
-name: Check Runner Disk
+name: Disk Test
 
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
-  disk:
+  test:
     runs-on: ubuntu-24.04
-
     steps:
-      - name: Check disk
-        run: |
-          echo "=== DISK ==="
-          df -h /
-
-          echo ""
-          echo "=== DISK BYTES ==="
-          df -B1 /
-
-          echo ""
-          echo "=== ROOT DIRECTORIES ==="
-          sudo du -xh --max-depth=1 / 2>/dev/null | sort -h
-
-          echo ""
-          echo "=== HOME ==="
-          sudo du -xh --max-depth=2 /home 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "=== WORK ==="
-          sudo du -xh --max-depth=3 /home/runner/work 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "=== TMP ==="
-          sudo du -xh --max-depth=2 /tmp 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "=== VAR ==="
-          sudo du -xh --max-depth=2 /var 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "=== DOCKER ==="
-          if command -v docker >/dev/null 2>&1; then
-            docker system df || true
-            sudo du -sh /var/lib/docker 2>/dev/null || true
-          else
-            echo "Docker not installed"
-          fi
-```
+      - run: df -h /
