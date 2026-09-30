@@ -61,7 +61,18 @@ jobs:
           key: ffmpeg-static-v1
 
       # ---------------------------------------------------------
-      # 4. Wait for handoff time
+      # 4. Download Video 1
+      # ---------------------------------------------------------
+      - name: Download Video 1
+        run: |
+          wget -q --show-progress \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_1.mp4" \
+            -O video1.mp4
+
+          ls -lh video1.mp4
+
+      # ---------------------------------------------------------
+      # 5. Wait for handoff
       # ---------------------------------------------------------
       - name: Wait for handoff
         if: inputs.handoff_epoch != '0'
@@ -75,7 +86,7 @@ jobs:
           fi
 
       # ---------------------------------------------------------
-      # 5. Start next Action after 3 minutes
+      # 6. Schedule Session 2 after 3 minutes
       # ---------------------------------------------------------
       - name: Schedule Session 2
         env:
@@ -85,29 +96,26 @@ jobs:
 
           HANDOFF=$(( $(date +%s) + 180 ))
 
+          echo "Session 2 handoff: $HANDOFF"
+
           curl -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/session2.yml/dispatches \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/session2.yml/dispatches" \
             -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$HANDOFF\"}}"
 
       # ---------------------------------------------------------
-      # 6. Stream directly from Hugging Face
+      # 7. Stream Video 1
       # ---------------------------------------------------------
       - name: Stream Video 1
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
-          ~/ffmpeg/ffmpeg \
+          timeout 360s ~/ffmpeg/ffmpeg \
             -re \
-            -reconnect 1 \
-            -reconnect_streamed 1 \
-            -reconnect_on_network_error 1 \
-            -reconnect_on_http_error 5xx \
-            -reconnect_delay_max 5 \
-            -i "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_1.mp4" \
+            -i video1.mp4 \
             -map 0:v:0 \
             -map 0:a:0 \
             -c copy \
