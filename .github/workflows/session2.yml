@@ -1,10 +1,9 @@
-name: Session 2 - Video 2
+name: Session 2
 
 on:
   workflow_dispatch:
     inputs:
       handoff_epoch:
-        description: "Unix time when this session should take over"
         required: false
         default: "0"
 
@@ -15,146 +14,84 @@ permissions:
 jobs:
   stream:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
 
-      - name: Restore FFmpeg
+      - name: Restore FFmpeg cache
         id: ffmpeg-cache
         uses: actions/cache/restore@v4
         with:
-          path: ffmpeg-bin
+          path: ~/ffmpeg
           key: ffmpeg-static-v1
 
-      - name: Emergency FFmpeg download
+      - name: Download FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          set -e
+          mkdir -p ~/ffmpeg
 
-          mkdir -p ffmpeg-bin
-
-          wget -q --show-progress \
+          wget -q \
             https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz \
-            -O ffmpeg.tar.xz
+            -O /tmp/ffmpeg.tar.xz
 
-          tar -xf ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
 
-          FFMPEG_PATH=$(find . -type f -name ffmpeg -perm -111 | head -n 1)
+          FF_DIR=$(find /tmp -maxdepth 1 -type d -name 'ffmpeg-master-latest-linux64-gpl')
 
-          cp "$FFMPEG_PATH" ffmpeg-bin/ffmpeg
-          chmod +x ffmpeg-bin/ffmpeg
+          cp "$FF_DIR/bin/ffmpeg" ~/ffmpeg/ffmpeg
+          cp "$FF_DIR/bin/ffprobe" ~/ffmpeg/ffprobe
 
-      - name: Restore Video 2
-        id: video-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: video2.mp4
-          key: video-session-2-v1
+          chmod +x ~/ffmpeg/ffmpeg
+          chmod +x ~/ffmpeg/ffprobe
 
-      - name: Download Video 2
-        if: steps.video-cache.outputs.cache-hit != 'true'
-        run: |
-          wget -q --show-progress \
-            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_2.mp4" \
-            -O video2.mp4
-
-          ls -lh video2.mp4
-
-      - name: Save Video 2 cache
-        if: steps.video-cache.outputs.cache-hit != 'true'
+      - name: Save FFmpeg cache
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: video2.mp4
-          key: video-session-2-v1
+          path: ~/ffmpeg
+          key: ffmpeg-static-v1
 
-      - name: Verify
+      - name: Wait for handoff
+        if: inputs.handoff_epoch != '0'
         run: |
-          set -e
-
-          ./ffmpeg-bin/ffmpeg -version | head -n 1
-
-          ./ffmpeg-bin/ffmpeg \
-            -hide_banner \
-            -i video2.mp4 \
-            -f null - 2>&1 | head -n 30
-
-      - name: Wait for handoff and stream
-        env:
-          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -e
-
-          FF="./ffmpeg-bin/ffmpeg"
-
-          HANDOFF_EPOCH="${{ inputs.handoff_epoch }}"
-
-          echo "Preparing Session 2..."
-          echo "Target handoff: $HANDOFF_EPOCH"
-
-          # -----------------------------------------------------
-          # IMPORTANT:
-          # We don't start sending RTMP yet.
-          # Everything is already prepared.
-          # -----------------------------------------------------
-
           NOW=$(date +%s)
-          WAIT=$((HANDOFF_EPOCH - NOW))
+          WAIT=$(( ${{ inputs.handoff_epoch }} - NOW ))
 
           if [ "$WAIT" -gt 0 ]; then
-            echo "Session 2 READY."
-            echo "Waiting ${WAIT} seconds for handoff..."
+            echo "Waiting $WAIT seconds until handoff..."
             sleep "$WAIT"
           fi
 
-          echo "=== HANDOFF ==="
-          echo "Starting Session 2 now."
+      - name: Schedule Session 3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 180
 
-          START_EPOCH=$(date +%s)
-          NEXT_HANDOFF=$((START_EPOCH + 600))
+          HANDOFF=$(( $(date +%s) + 180 ))
 
-          "$FF" \
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/session3.yml/dispatches \
+            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$HANDOFF\"}}"
+
+      - name: Stream Video 2
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          ~/ffmpeg/ffmpeg \
             -re \
-            -stream_loop -1 \
-            -i video2.mp4 \
+            -reconnect 1 \
+            -reconnect_streamed 1 \
+            -reconnect_on_network_error 1 \
+            -reconnect_on_http_error 5xx \
+            -reconnect_delay_max 5 \
+            -i "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_2.mp4" \
             -map 0:v:0 \
             -map 0:a:0 \
             -c copy \
             -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
-            > ffmpeg.log 2>&1 &
-
-          FFMPEG_PID=$!
-
-          echo "FFmpeg PID: $FFMPEG_PID"
-
-          # Start Session 3 preparation after 6 minutes.
-
-          sleep 360
-
-          echo "Starting Session 3 preparation..."
-
-          curl -L \
-            -sS \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            https://api.github.com/repos/viktorivanovgrow-code/youtube-test-stream/actions/workflows/session3.yml/dispatches \
-            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"${NEXT_HANDOFF}\"}}"
-
-          echo "Session 3 dispatched."
-
-          NOW=$(date +%s)
-          REMAINING=$((NEXT_HANDOFF - NOW))
-
-          if [ "$REMAINING" -gt 0 ]; then
-            sleep "$REMAINING"
-          fi
-
-          echo "Stopping Session 2..."
-
-          kill "$FFMPEG_PID" || true
-          wait "$FFMPEG_PID" || true
-
-          echo "Session 2 finished."
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
