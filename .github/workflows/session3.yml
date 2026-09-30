@@ -51,6 +51,17 @@ jobs:
           path: ~/ffmpeg
           key: ffmpeg-static-v1
 
+      # ---------------------------------------------------------
+      # Download Video 3
+      # ---------------------------------------------------------
+      - name: Download Video 3
+        run: |
+          wget -q --show-progress \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_3.mp4" \
+            -O video3.mp4
+
+          ls -lh video3.mp4
+
       - name: Wait for handoff
         if: inputs.handoff_epoch != '0'
         run: |
@@ -62,6 +73,9 @@ jobs:
             sleep "$WAIT"
           fi
 
+      # ---------------------------------------------------------
+      # Schedule Session 1 after 3 minutes
+      # ---------------------------------------------------------
       - name: Schedule Session 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -70,26 +84,26 @@ jobs:
 
           HANDOFF=$(( $(date +%s) + 180 ))
 
+          echo "Session 1 handoff: $HANDOFF"
+
           curl -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/session1.yml/dispatches \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/session1.yml/dispatches" \
             -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$HANDOFF\"}}"
 
+      # ---------------------------------------------------------
+      # Stream Video 3
+      # ---------------------------------------------------------
       - name: Stream Video 3
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
-          ~/ffmpeg/ffmpeg \
+          timeout 360s ~/ffmpeg/ffmpeg \
             -re \
-            -reconnect 1 \
-            -reconnect_streamed 1 \
-            -reconnect_on_network_error 1 \
-            -reconnect_on_http_error 5xx \
-            -reconnect_delay_max 5 \
-            -i "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_3.mp4" \
+            -i video3.mp4 \
             -map 0:v:0 \
             -map 0:a:0 \
             -c copy \
