@@ -1,0 +1,105 @@
+name: Test HF Download Speed
+
+on: workflow_dispatch
+
+jobs:
+  download-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+
+      - name: Disk before download
+        run: |
+          echo "======================================"
+          echo "DISK BEFORE DOWNLOAD"
+          echo "======================================"
+          df -h /
+          echo ""
+          df -B1 /
+
+      - name: Download video from Hugging Face
+        run: |
+          echo "======================================"
+          echo "DOWNLOADING cool_test.mp4"
+          echo "======================================"
+
+          START=$(date +%s)
+
+          wget \
+            --progress=dot:giga \
+            --tries=3 \
+            --timeout=60 \
+            -O "$HOME/cool_test.mp4" \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/cool_test.mp4"
+
+          END=$(date +%s)
+
+          ELAPSED=$((END-START))
+
+          echo ""
+          echo "======================================"
+          echo "DOWNLOAD FINISHED"
+          echo "======================================"
+
+          echo "Time: ${ELAPSED} seconds"
+
+          FILE_BYTES=$(stat -c%s "$HOME/cool_test.mp4")
+
+          echo "File size: $FILE_BYTES bytes"
+
+          if [ "$ELAPSED" -gt 0 ]; then
+            SPEED=$(awk "BEGIN {printf \"%.2f\", $FILE_BYTES / $ELAPSED / 1000000}")
+            SPEED_MIB=$(awk "BEGIN {printf \"%.2f\", $FILE_BYTES / $ELAPSED / 1048576}")
+
+            echo "Average speed: ${SPEED} MB/s"
+            echo "Average speed: ${SPEED_MIB} MiB/s"
+
+            MINUTES=$(awk "BEGIN {printf \"%.2f\", $ELAPSED / 60}")
+            echo "Download time: ${MINUTES} minutes"
+          fi
+
+      - name: Verify downloaded file
+        run: |
+          echo "======================================"
+          echo "FILE CHECK"
+          echo "======================================"
+
+          ls -lh "$HOME/cool_test.mp4"
+
+          echo ""
+          echo "Actual disk usage:"
+          du -h "$HOME/cool_test.mp4"
+
+          echo ""
+          echo "FFprobe:"
+          if command -v ffprobe >/dev/null 2>&1; then
+            ffprobe -v error \
+              -show_entries format=duration,size \
+              -show_entries stream=codec_name,width,height,r_frame_rate \
+              -of default=noprint_wrappers=1 \
+              "$HOME/cool_test.mp4"
+          else
+            echo "ffprobe is not installed on this runner"
+          fi
+
+      - name: Disk after download
+        run: |
+          echo "======================================"
+          echo "DISK AFTER DOWNLOAD"
+          echo "======================================"
+
+          df -h /
+
+          echo ""
+          df -B1 /
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f "$HOME/cool_test.mp4"
+
+          echo "======================================"
+          echo "DISK AFTER CLEANUP"
+          echo "======================================"
+
+          df -h /
