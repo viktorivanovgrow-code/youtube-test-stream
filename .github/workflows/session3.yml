@@ -1,0 +1,154 @@
+name: Session 3 - Video 3
+
+on:
+  workflow_dispatch:
+    inputs:
+      handoff_epoch:
+        description: "Unix time when this session should take over"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  stream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+
+      - name: Restore FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ffmpeg-bin
+          key: ffmpeg-static-v1
+
+      - name: Emergency FFmpeg download
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+
+          mkdir -p ffmpeg-bin
+
+          wget -q --show-progress \
+            https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz \
+            -O ffmpeg.tar.xz
+
+          tar -xf ffmpeg.tar.xz
+
+          FFMPEG_PATH=$(find . -type f -name ffmpeg -perm -111 | head -n 1)
+
+          cp "$FFMPEG_PATH" ffmpeg-bin/ffmpeg
+          chmod +x ffmpeg-bin/ffmpeg
+
+      - name: Restore Video 3
+        id: video-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: video3.mp4
+          key: video-session-3-v1
+
+      - name: Download Video 3
+        if: steps.video-cache.outputs.cache-hit != 'true'
+        run: |
+          wget -q --show-progress \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_3.mp4" \
+            -O video3.mp4
+
+          ls -lh video3.mp4
+
+      - name: Save Video 3 cache
+        if: steps.video-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: video3.mp4
+          key: video-session-3-v1
+
+      - name: Verify
+        run: |
+          set -e
+
+          ./ffmpeg-bin/ffmpeg -version | head -n 1
+
+          ./ffmpeg-bin/ffmpeg \
+            -hide_banner \
+            -i video3.mp4 \
+            -f null - 2>&1 | head -n 30
+
+      - name: Wait for handoff and stream
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+
+          FF="./ffmpeg-bin/ffmpeg"
+
+          HANDOFF_EPOCH="${{ inputs.handoff_epoch }}"
+
+          echo "Preparing Session 3..."
+          echo "Target handoff: $HANDOFF_EPOCH"
+
+          NOW=$(date +%s)
+          WAIT=$((HANDOFF_EPOCH - NOW))
+
+          if [ "$WAIT" -gt 0 ]; then
+            echo "Session 3 READY."
+            echo "Waiting ${WAIT} seconds for handoff..."
+            sleep "$WAIT"
+          fi
+
+          echo "=== HANDOFF ==="
+          echo "Starting Session 3 now."
+
+          START_EPOCH=$(date +%s)
+          NEXT_HANDOFF=$((START_EPOCH + 600))
+
+          "$FF" \
+            -re \
+            -stream_loop -1 \
+            -i video3.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          FFMPEG_PID=$!
+
+          echo "FFmpeg PID: $FFMPEG_PID"
+
+          # Start Session 1 preparation.
+
+          sleep 360
+
+          echo "Starting Session 1 preparation..."
+
+          curl -L \
+            -sS \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            https://api.github.com/repos/viktorivanovgrow-code/youtube-test-stream/actions/workflows/session1.yml/dispatches \
+            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"${NEXT_HANDOFF}\"}}"
+
+          echo "Session 1 dispatched."
+
+          NOW=$(date +%s)
+          REMAINING=$((NEXT_HANDOFF - NOW))
+
+          if [ "$REMAINING" -gt 0 ]; then
+            sleep "$REMAINING"
+          fi
+
+          echo "Stopping Session 3..."
+
+          kill "$FFMPEG_PID" || true
+          wait "$FFMPEG_PID" || true
+
+          echo "Session 3 finished."
