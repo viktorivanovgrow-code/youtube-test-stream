@@ -29,7 +29,7 @@ jobs:
           key: ffmpeg-static-v1
 
       # ---------------------------------------------------------
-      # 2. Download FFmpeg only if cache is empty
+      # 2. Download FFmpeg if cache is empty
       # ---------------------------------------------------------
       - name: Download FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
@@ -72,7 +72,7 @@ jobs:
           ls -lh video1.mp4
 
       # ---------------------------------------------------------
-      # 5. Wait for handoff
+      # 5. Wait for assigned handoff time
       # ---------------------------------------------------------
       - name: Wait for handoff
         if: inputs.handoff_epoch != '0'
@@ -80,13 +80,37 @@ jobs:
           NOW=$(date +%s)
           WAIT=$(( ${{ inputs.handoff_epoch }} - NOW ))
 
+          echo "Current time: $NOW"
+          echo "Handoff time: ${{ inputs.handoff_epoch }}"
+          echo "Waiting: $WAIT seconds"
+
           if [ "$WAIT" -gt 0 ]; then
-            echo "Waiting $WAIT seconds until handoff..."
             sleep "$WAIT"
           fi
 
       # ---------------------------------------------------------
-      # 6. Schedule Session 2 after 3 minutes
+      # 6. Start Video 1 immediately
+      # ---------------------------------------------------------
+      - name: Start Video 1
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          ~/ffmpeg/ffmpeg \
+            -re \
+            -i video1.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          echo $! > ffmpeg.pid
+
+          echo "FFmpeg started with PID $(cat ffmpeg.pid)"
+
+      # ---------------------------------------------------------
+      # 7. After 3 minutes start preparing Session 2
       # ---------------------------------------------------------
       - name: Schedule Session 2
         env:
@@ -94,9 +118,11 @@ jobs:
         run: |
           sleep 180
 
-          HANDOFF=$(( $(date +%s) + 180 ))
+          # Session 2 will start at 5:30
+          HANDOFF=$(( $(date +%s) + 150 ))
 
-          echo "Session 2 handoff: $HANDOFF"
+          echo "Starting Session 2"
+          echo "Session 2 handoff epoch: $HANDOFF"
 
           curl -L \
             -X POST \
@@ -107,17 +133,25 @@ jobs:
             -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$HANDOFF\"}}"
 
       # ---------------------------------------------------------
-      # 7. Stream Video 1
+      # 8. Keep current stream alive until 6 minutes
       # ---------------------------------------------------------
-      - name: Stream Video 1
-        env:
-          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+      - name: Keep Session 1 alive
         run: |
-          timeout 360s ~/ffmpeg/ffmpeg \
-            -re \
-            -i video1.mp4 \
-            -map 0:v:0 \
-            -map 0:a:0 \
-            -c copy \
-            -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+          sleep 150
+
+      # ---------------------------------------------------------
+      # 9. Stop current stream
+      # ---------------------------------------------------------
+      - name: Stop Session 1
+        run: |
+          if [ -f ffmpeg.pid ]; then
+            PID=$(cat ffmpeg.pid)
+
+            if kill -0 "$PID" 2>/dev/null; then
+              echo "Stopping FFmpeg PID $PID"
+              kill "$PID"
+              wait "$PID" 2>/dev/null || true
+            fi
+          fi
+
+          echo "Session 1 finished."
