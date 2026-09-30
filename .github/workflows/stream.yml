@@ -11,9 +11,9 @@ jobs:
 
     steps:
 
-      # ----------------------------------------
+      # ==========================================================
       # 1. Install FFmpeg
-      # ----------------------------------------
+      # ==========================================================
 
       - name: Install FFmpeg
         run: |
@@ -21,132 +21,130 @@ jobs:
           sudo apt-get install -y ffmpeg
 
           ffmpeg -version
+          ffprobe -version
 
 
-      # ----------------------------------------
-      # 2. Download both videos in parallel
-      # ----------------------------------------
+      # ==========================================================
+      # 2. Download videos from Hugging Face
+      # ==========================================================
 
       - name: Download videos
         run: |
-          echo "Downloading both videos..."
+          set -e
+
+          echo "=========================================="
+          echo "Downloading videos from Hugging Face"
+          echo "=========================================="
 
           START=$(date +%s)
 
-          wget -O video1_source.mp4 \
-          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/TEST%20STEAR.mp4" &
+          wget -O video1.mp4 \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_1.mp4" &
 
           PID1=$!
 
-          wget -O video2_source.mp4 \
-          "https://huggingface.co/spaces/viktorgrow/my-video-storage/resolve/main/test-video-2.mp4" &
+          wget -O video2.mp4 \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_2.mp4" &
 
           PID2=$!
 
+          wget -O video3.mp4 \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_3.mp4" &
+
+          PID3=$!
+
           wait $PID1
           wait $PID2
+          wait $PID3
 
           END=$(date +%s)
 
+          echo ""
           echo "Downloads completed."
           echo "Download time: $((END-START)) seconds."
+          echo ""
 
-          ls -lh video1_source.mp4
-          ls -lh video2_source.mp4
+          ls -lh video1.mp4
+          ls -lh video2.mp4
+          ls -lh video3.mp4
 
 
-      # ----------------------------------------
-      # 3. Normalize VIDEO 1
-      # ----------------------------------------
+      # ==========================================================
+      # 3. Check ORIGINAL video parameters
+      # ==========================================================
 
-      - name: Normalize video 1
+      - name: Check original video parameters
         run: |
-          echo "Normalizing video 1..."
 
-          START=$(date +%s)
+          echo ""
+          echo "=========================================="
+          echo "VIDEO 1"
+          echo "=========================================="
 
-          ffmpeg \
-            -y \
-            -i video1_source.mp4 \
-            -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=25" \
-            -c:v libx264 \
-            -preset ultrafast \
-            -tune zerolatency \
-            -b:v 4000k \
-            -maxrate 4000k \
-            -bufsize 8000k \
-            -pix_fmt yuv420p \
-            -g 50 \
-            -keyint_min 50 \
-            -sc_threshold 0 \
-            -c:a aac \
-            -b:a 320k \
-            -ar 44100 \
-            -ac 2 \
-            -movflags +faststart \
+          ffprobe \
+            -v error \
+            -show_entries \
+            stream=index,codec_name,codec_long_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,time_base,bit_rate,sample_rate,channels,channel_layout \
+            -of default=noprint_wrappers=1 \
             video1.mp4
 
-          END=$(date +%s)
+          echo ""
+          echo "=========================================="
+          echo "VIDEO 2"
+          echo "=========================================="
 
-          echo "Video 1 normalization time: $((END-START)) seconds."
-
-
-      # ----------------------------------------
-      # 4. Normalize VIDEO 2
-      # ----------------------------------------
-
-      - name: Normalize video 2
-        run: |
-          echo "Normalizing video 2..."
-
-          START=$(date +%s)
-
-          ffmpeg \
-            -y \
-            -i video2_source.mp4 \
-            -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=25" \
-            -c:v libx264 \
-            -preset ultrafast \
-            -tune zerolatency \
-            -b:v 4000k \
-            -maxrate 4000k \
-            -bufsize 8000k \
-            -pix_fmt yuv420p \
-            -g 50 \
-            -keyint_min 50 \
-            -sc_threshold 0 \
-            -c:a aac \
-            -b:a 320k \
-            -ar 44100 \
-            -ac 2 \
-            -movflags +faststart \
+          ffprobe \
+            -v error \
+            -show_entries \
+            stream=index,codec_name,codec_long_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,time_base,bit_rate,sample_rate,channels,channel_layout \
+            -of default=noprint_wrappers=1 \
             video2.mp4
 
-          END=$(date +%s)
+          echo ""
+          echo "=========================================="
+          echo "VIDEO 3"
+          echo "=========================================="
 
-          echo "Video 2 normalization time: $((END-START)) seconds."
+          ffprobe \
+            -v error \
+            -show_entries \
+            stream=index,codec_name,codec_long_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,time_base,bit_rate,sample_rate,channels,channel_layout \
+            -of default=noprint_wrappers=1 \
+            video3.mp4
 
 
-      # ----------------------------------------
-      # 5. Create playlist
-      # ----------------------------------------
+      # ==========================================================
+      # 4. Create concat playlist
+      # ==========================================================
 
       - name: Create playlist
         run: |
+          set -e
+
           echo "file 'video1.mp4'" > playlist.txt
           echo "file 'video2.mp4'" >> playlist.txt
+          echo "file 'video3.mp4'" >> playlist.txt
 
-          echo "Playlist:"
+          echo ""
+          echo "=========================================="
+          echo "PLAYLIST"
+          echo "=========================================="
+
           cat playlist.txt
 
 
-      # ----------------------------------------
-      # 6. Create ONE combined MP4
-      # ----------------------------------------
+      # ==========================================================
+      # 5. Create ONE combined file WITHOUT re-encoding
+      # ==========================================================
 
-      - name: Build playlist MP4
+      - name: Build lossless playlist
         run: |
-          echo "Building combined playlist..."
+          set -e
+
+          echo ""
+          echo "=========================================="
+          echo "Building playlist WITHOUT re-encoding"
+          echo "=========================================="
 
           START=$(date +%s)
 
@@ -155,114 +153,77 @@ jobs:
             -f concat \
             -safe 0 \
             -i playlist.txt \
+            -map 0:v:0 \
+            -map 0:a:0 \
             -c copy \
             -movflags +faststart \
             playlist.mp4
 
           END=$(date +%s)
 
-          echo "Playlist creation time: $((END-START)) seconds."
+          echo ""
+          echo "Playlist created."
+          echo "Processing time: $((END-START)) seconds."
+          echo ""
 
           ls -lh playlist.mp4
 
-          echo "Playlist duration:"
+          echo ""
+          echo "Playlist parameters:"
+          echo ""
 
           ffprobe \
             -v error \
-            -show_entries format=duration \
+            -show_entries \
+            stream=index,codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,time_base,bit_rate,sample_rate,channels,channel_layout \
             -of default=noprint_wrappers=1 \
             playlist.mp4
 
 
-      # ----------------------------------------
-      # 7. Start FFmpeg / YouTube
-      # ----------------------------------------
+      # ==========================================================
+      # 6. Start YouTube stream
+      # ==========================================================
 
       - name: Start YouTube stream
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+
         run: |
+
           echo "=========================================="
-          echo "Starting YouTube stream"
+          echo "STARTING YOUTUBE STREAM"
           echo "=========================================="
-          echo "Playlist:"
-          echo "VIDEO 1 -> VIDEO 2 -> VIDEO 1 -> VIDEO 2..."
+
           echo ""
-          echo "One FFmpeg process."
-          echo "One RTMP connection."
-          echo "Infinite playlist loop."
+          echo "VIDEO 1"
+          echo "   ↓"
+          echo "VIDEO 2"
+          echo "   ↓"
+          echo "VIDEO 3"
+          echo "   ↓"
+          echo "VIDEO 1"
+          echo "   ↓"
+          echo "VIDEO 2"
+          echo "   ↓"
+          echo "VIDEO 3"
+          echo "   ↓"
+          echo "INFINITE LOOP"
           echo ""
-          echo "Current Action lifetime: 30 minutes."
-          echo "Next Action starts after: 22 minutes."
-          echo "Maximum planned overlap: 8 minutes."
-          echo "=========================================="
+
+          echo "IMPORTANT:"
+          echo "No video re-encoding."
+          echo "No audio re-encoding."
+          echo "Original FPS preserved."
+          echo "Original bitrate preserved."
+          echo ""
 
           ffmpeg \
             -re \
             -stream_loop -1 \
             -fflags +genpts \
             -i playlist.mp4 \
-            -r 25 \
-            -c:v libx264 \
-            -preset ultrafast \
-            -tune zerolatency \
-            -b:v 4000k \
-            -maxrate 4000k \
-            -bufsize 8000k \
-            -pix_fmt yuv420p \
-            -g 50 \
-            -keyint_min 50 \
-            -sc_threshold 0 \
-            -c:a copy \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
             -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
-            > ffmpeg.log 2>&1 &
-
-          FFMPEG_PID=$!
-
-          echo "FFmpeg PID: ${FFMPEG_PID}"
-
-          sleep 5
-
-          echo "Initial FFmpeg log:"
-          cat ffmpeg.log
-
-
-      # ----------------------------------------
-      # 8. Start next Action after 22 minutes
-      # ----------------------------------------
-
-      - name: Start next Action
-        env:
-          GH_RESTART_TOKEN: ${{ secrets.GH_RESTART_TOKEN }}
-        run: |
-
-          echo "=========================================="
-          echo "Current Action: 30 minutes"
-          echo "Next Action: starts after 22 minutes"
-          echo "=========================================="
-
-          sleep 1320
-
-          echo "22 minutes passed."
-          echo "Starting next Action..."
-
-          curl --fail-with-body -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_RESTART_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/stream.yml/dispatches" \
-            -d '{"ref":"main"}'
-
-          echo ""
-          echo "Next Action successfully started."
-          echo ""
-          echo "Current Action continues running."
-          echo "It will finish at approximately 30 minutes."
-
-          sleep 480
-
-          echo ""
-          echo "30 minutes completed."
-          echo "Current Action is finishing."
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
