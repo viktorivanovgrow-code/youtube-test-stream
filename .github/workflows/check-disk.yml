@@ -1,9 +1,63 @@
-name: Disk Test
+name: Check Runner Disk
 
 on: workflow_dispatch
 
 jobs:
-  test:
+  disk:
     runs-on: ubuntu-24.04
+
     steps:
-      - run: df -h /
+      - name: Check disk
+        run: |
+          echo "======================================"
+          echo "DISK"
+          echo "======================================"
+          df -h /
+
+          echo ""
+          echo "======================================"
+          echo "DISK IN BYTES"
+          echo "======================================"
+          df -B1 /
+
+          echo ""
+          echo "======================================"
+          echo "ROOT DIRECTORIES"
+          echo "======================================"
+          sudo du -xh --max-depth=1 / 2>/dev/null | sort -h
+
+          echo ""
+          echo "======================================"
+          echo "HOME / RUNNER"
+          echo "======================================"
+          sudo du -xh --max-depth=2 /home/runner 2>/dev/null | sort -h | tail -50
+
+          echo ""
+          echo "======================================"
+          echo "WORK"
+          echo "======================================"
+          sudo du -xh --max-depth=3 /home/runner/work 2>/dev/null | sort -h | tail -50
+
+          echo ""
+          echo "======================================"
+          echo "TMP"
+          echo "======================================"
+          sudo du -xh --max-depth=2 /tmp 2>/dev/null | sort -h | tail -50
+
+          echo ""
+          echo "======================================"
+          echo "VAR"
+          echo "======================================"
+          sudo du -xh --max-depth=2 /var 2>/dev/null | sort -h | tail -50
+
+          echo ""
+          echo "======================================"
+          echo "DOCKER"
+          echo "======================================"
+
+          if command -v docker >/dev/null 2>&1; then
+            docker system df || true
+            sudo du -sh /var/lib/docker 2>/dev/null || true
+          else
+            echo "Docker not installed"
+          fi
