@@ -1,63 +1,188 @@
-name: Check Runner Disk
+name: Test Runner 12GB
 
 on: workflow_dispatch
 
 jobs:
-  disk:
+  disk-test:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Check disk
+
+      - name: Disk before cleanup
         run: |
           echo "======================================"
-          echo "DISK"
+          echo "DISK BEFORE CLEANUP"
           echo "======================================"
           df -h /
 
-          echo ""
+      - name: Clean Docker
+        run: |
           echo "======================================"
-          echo "DISK IN BYTES"
-          echo "======================================"
-          df -B1 /
-
-          echo ""
-          echo "======================================"
-          echo "ROOT DIRECTORIES"
-          echo "======================================"
-          sudo du -xh --max-depth=1 / 2>/dev/null | sort -h
-
-          echo ""
-          echo "======================================"
-          echo "HOME / RUNNER"
-          echo "======================================"
-          sudo du -xh --max-depth=2 /home/runner 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "======================================"
-          echo "WORK"
-          echo "======================================"
-          sudo du -xh --max-depth=3 /home/runner/work 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "======================================"
-          echo "TMP"
-          echo "======================================"
-          sudo du -xh --max-depth=2 /tmp 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "======================================"
-          echo "VAR"
-          echo "======================================"
-          sudo du -xh --max-depth=2 /var 2>/dev/null | sort -h | tail -50
-
-          echo ""
-          echo "======================================"
-          echo "DOCKER"
+          echo "CLEANING DOCKER"
           echo "======================================"
 
           if command -v docker >/dev/null 2>&1; then
             docker system df || true
-            sudo du -sh /var/lib/docker 2>/dev/null || true
+            docker system prune -af || true
+            echo ""
+            echo "Docker after cleanup:"
+            docker system df || true
           else
-            echo "Docker not installed"
+            echo "Docker is not installed"
           fi
+
+      - name: Disk after Docker cleanup
+        run: |
+          echo "======================================"
+          echo "DISK AFTER DOCKER CLEANUP"
+          echo "======================================"
+          df -h /
+
+      - name: Restore FFmpeg cache
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-static-v1
+
+      - name: Check FFmpeg
+        run: |
+          echo "======================================"
+          echo "FFMPEG"
+          echo "======================================"
+
+          if [ -d "$HOME/ffmpeg" ]; then
+            echo "FFmpeg directory:"
+            du -sh "$HOME/ffmpeg"
+
+            echo ""
+            echo "FFmpeg files:"
+            ls -lh "$HOME/ffmpeg"
+
+            echo ""
+            echo "FFmpeg version:"
+            "$HOME/ffmpeg/ffmpeg" -version | head -1
+
+            echo ""
+            echo "FFprobe version:"
+            "$HOME/ffmpeg/ffprobe" -version | head -1
+          else
+            echo "ERROR: FFmpeg cache was NOT restored."
+            exit 1
+          fi
+
+      - name: Disk after FFmpeg
+        run: |
+          echo "======================================"
+          echo "DISK AFTER FFMPEG"
+          echo "======================================"
+          df -h /
+
+          echo ""
+          echo "Available bytes:"
+          df -B1 / | awk 'NR==2 {print $4}'
+
+      - name: Create real 12GB test file
+        run: |
+          echo "======================================"
+          echo "CREATING REAL 12GB FILE"
+          echo "======================================"
+
+          echo "Disk before:"
+          df -h /
+
+          echo ""
+          echo "Creating 12GB file..."
+
+          dd if=/dev/zero of="$HOME/test_12GB.bin" bs=1M count=12288 status=progress
+
+          echo ""
+          echo "12GB file created."
+
+          echo ""
+          echo "File information:"
+          ls -lh "$HOME/test_12GB.bin"
+
+          echo ""
+          echo "Actual disk usage:"
+          du -h "$HOME/test_12GB.bin"
+
+      - name: Disk after 12GB file
+        run: |
+          echo "======================================"
+          echo "DISK AFTER 12GB FILE"
+          echo "======================================"
+
+          df -h /
+
+          echo ""
+          echo "Disk in bytes:"
+          df -B1 /
+
+          echo ""
+          echo "12GB file:"
+          ls -lh "$HOME/test_12GB.bin"
+
+          echo ""
+          echo "Actual file usage:"
+          du -h "$HOME/test_12GB.bin"
+
+      - name: Test additional 500MB
+        run: |
+          echo "======================================"
+          echo "TESTING ADDITIONAL 500MB"
+          echo "======================================"
+
+          echo "Current disk:"
+          df -h /
+
+          echo ""
+          echo "Creating additional 500MB..."
+
+          dd if=/dev/zero of="$HOME/test_extra_500MB.bin" bs=1M count=500 status=progress
+
+          echo ""
+          echo "500MB file created."
+
+          echo ""
+          echo "Disk after additional 500MB:"
+          df -h /
+
+      - name: Final report
+        run: |
+          echo "======================================"
+          echo "FINAL REPORT"
+          echo "======================================"
+
+          echo ""
+          echo "FILES:"
+          ls -lh "$HOME/test_12GB.bin" "$HOME/test_extra_500MB.bin"
+
+          echo ""
+          echo "ACTUAL FILE USAGE:"
+          du -h "$HOME/test_12GB.bin" "$HOME/test_extra_500MB.bin"
+
+          echo ""
+          echo "FINAL DISK:"
+          df -h /
+
+          echo ""
+          echo "FINAL DISK IN BYTES:"
+          df -B1 /
+
+      - name: Cleanup test files
+        if: always()
+        run: |
+          echo "======================================"
+          echo "CLEANUP"
+          echo "======================================"
+
+          rm -f "$HOME/test_12GB.bin"
+          rm -f "$HOME/test_extra_500MB.bin"
+
+          echo ""
+          echo "Test files removed."
+
+          echo ""
+          echo "Disk after cleanup:"
+          df -h /
