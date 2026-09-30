@@ -1,0 +1,30 @@
+name: Check Runner Disk
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-disk:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check disk space
+        run: |
+          echo "===== DISK ====="
+          df -h /
+
+          echo ""
+          echo "===== BLOCK DEVICE ====="
+          lsblk
+
+          echo ""
+          echo "===== TOP DIRECTORIES ====="
+          sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -20
+
+          echo ""
+          echo "===== RUNNER DIRECTORIES ====="
+          du -sh /home/runner/* 2>/dev/null | sort -h
+
+          echo ""
+          echo "===== FREE SPACE IN BYTES ====="
+          df -B1 /
