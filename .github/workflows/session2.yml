@@ -62,19 +62,46 @@ jobs:
 
           ls -lh video2.mp4
 
+      # ---------------------------------------------------------
+      # Wait until Session 2 handoff time
+      # ---------------------------------------------------------
       - name: Wait for handoff
         if: inputs.handoff_epoch != '0'
         run: |
           NOW=$(date +%s)
           WAIT=$(( ${{ inputs.handoff_epoch }} - NOW ))
 
+          echo "Current time: $NOW"
+          echo "Handoff time: ${{ inputs.handoff_epoch }}"
+          echo "Waiting: $WAIT seconds"
+
           if [ "$WAIT" -gt 0 ]; then
-            echo "Waiting $WAIT seconds until handoff..."
             sleep "$WAIT"
           fi
 
       # ---------------------------------------------------------
-      # Schedule Session 3 after 3 minutes
+      # Start Video 2
+      # ---------------------------------------------------------
+      - name: Start Video 2
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          ~/ffmpeg/ffmpeg \
+            -re \
+            -i video2.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          echo $! > ffmpeg.pid
+
+          echo "FFmpeg started with PID $(cat ffmpeg.pid)"
+
+      # ---------------------------------------------------------
+      # Start Session 3 preparation after 3 minutes
       # ---------------------------------------------------------
       - name: Schedule Session 3
         env:
@@ -82,9 +109,11 @@ jobs:
         run: |
           sleep 180
 
-          HANDOFF=$(( $(date +%s) + 180 ))
+          # Session 3 starts 30 seconds before Session 2 ends
+          HANDOFF=$(( $(date +%s) + 150 ))
 
-          echo "Session 3 handoff: $HANDOFF"
+          echo "Starting Session 3"
+          echo "Session 3 handoff epoch: $HANDOFF"
 
           curl -L \
             -X POST \
@@ -95,17 +124,25 @@ jobs:
             -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$HANDOFF\"}}"
 
       # ---------------------------------------------------------
-      # Stream Video 2
+      # Keep stream alive
       # ---------------------------------------------------------
-      - name: Stream Video 2
-        env:
-          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+      - name: Keep Session 2 alive
         run: |
-          timeout 360s ~/ffmpeg/ffmpeg \
-            -re \
-            -i video2.mp4 \
-            -map 0:v:0 \
-            -map 0:a:0 \
-            -c copy \
-            -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+          sleep 150
+
+      # ---------------------------------------------------------
+      # Stop Session 2
+      # ---------------------------------------------------------
+      - name: Stop Session 2
+        run: |
+          if [ -f ffmpeg.pid ]; then
+            PID=$(cat ffmpeg.pid)
+
+            if kill -0 "$PID" 2>/dev/null; then
+              echo "Stopping FFmpeg PID $PID"
+              kill "$PID"
+              wait "$PID" 2>/dev/null || true
+            fi
+          fi
+
+          echo "Session 2 finished."
