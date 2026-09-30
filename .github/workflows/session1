@@ -1,0 +1,207 @@
+name: Session 1 - Video 1
+
+on:
+  workflow_dispatch:
+    inputs:
+      handoff_epoch:
+        description: "Unix time when this session should take over"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  stream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+
+      # ---------------------------------------------------------
+      # 1. Restore FFmpeg cache
+      # ---------------------------------------------------------
+      - name: Restore FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ffmpeg-bin
+          key: ffmpeg-static-v1
+
+      # ---------------------------------------------------------
+      # 2. First run only: download FFmpeg
+      # ---------------------------------------------------------
+      - name: Download FFmpeg if cache is missing
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+
+          mkdir -p ffmpeg-bin
+
+          wget -q --show-progress \
+            https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz \
+            -O ffmpeg.tar.xz
+
+          tar -xf ffmpeg.tar.xz
+
+          FFMPEG_PATH=$(find . -type f -name ffmpeg -perm -111 | head -n 1)
+
+          if [ -z "$FFMPEG_PATH" ]; then
+            echo "FFmpeg binary not found"
+            exit 1
+          fi
+
+          cp "$FFMPEG_PATH" ffmpeg-bin/ffmpeg
+          chmod +x ffmpeg-bin/ffmpeg
+
+          ./ffmpeg-bin/ffmpeg -version | head -n 1
+
+          rm -rf ffmpeg-master-latest-linux64-gpl
+          rm -f ffmpeg.tar.xz
+
+      # ---------------------------------------------------------
+      # 3. Save FFmpeg BEFORE streaming starts
+      # ---------------------------------------------------------
+      - name: Save FFmpeg cache
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ffmpeg-bin
+          key: ffmpeg-static-v1
+
+      # ---------------------------------------------------------
+      # 4. Restore Video 1 cache
+      # ---------------------------------------------------------
+      - name: Restore Video 1
+        id: video-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: video1.mp4
+          key: video-session-1-v1
+
+      # ---------------------------------------------------------
+      # 5. Download Video 1 only if needed
+      # ---------------------------------------------------------
+      - name: Download Video 1
+        if: steps.video-cache.outputs.cache-hit != 'true'
+        run: |
+          wget -q --show-progress \
+            "https://huggingface.co/viktorgrow/my-video-storage/resolve/main/vinyl_test_1.mp4" \
+            -O video1.mp4
+
+          ls -lh video1.mp4
+
+      # ---------------------------------------------------------
+      # 6. Save Video 1 cache
+      # ---------------------------------------------------------
+      - name: Save Video 1 cache
+        if: steps.video-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: video1.mp4
+          key: video-session-1-v1
+
+      # ---------------------------------------------------------
+      # 7. Verify FFmpeg + video
+      # ---------------------------------------------------------
+      - name: Verify
+        run: |
+          set -e
+
+          echo "=== FFMPEG ==="
+          ./ffmpeg-bin/ffmpeg -version | head -n 1
+
+          echo
+          echo "=== VIDEO ==="
+          ./ffmpeg-bin/ffmpeg \
+            -hide_banner \
+            -i video1.mp4 \
+            -f null - 2>&1 | head -n 30
+
+      # ---------------------------------------------------------
+      # 8. Start streaming
+      # ---------------------------------------------------------
+      - name: Start stream and prepare Session 2
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+
+          FF="./ffmpeg-bin/ffmpeg"
+
+          echo "Starting Video 1..."
+
+          START_EPOCH=$(date +%s)
+          HANDOFF_EPOCH=$((START_EPOCH + 600))
+
+          echo "Stream start: $START_EPOCH"
+          echo "Handoff time:  $HANDOFF_EPOCH"
+
+          # -----------------------------------------------------
+          # Start FFmpeg.
+          #
+          # -stream_loop -1:
+          # if the source is shorter than 10 minutes,
+          # it starts again inside the SAME FFmpeg process.
+          #
+          # -c copy:
+          # absolutely no video/audio re-encoding.
+          # -----------------------------------------------------
+
+          "$FF" \
+            -re \
+            -stream_loop -1 \
+            -i video1.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          FFMPEG_PID=$!
+
+          echo "FFmpeg PID: $FFMPEG_PID"
+
+          # -----------------------------------------------------
+          # Give Session 1 some time to establish the stream,
+          # then start Session 2.
+          # -----------------------------------------------------
+
+          sleep 360
+
+          echo "Starting Session 2 preparation..."
+
+          curl -L \
+            -sS \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            https://api.github.com/repos/viktorivanovgrow-code/youtube-test-stream/actions/workflows/session2.yml/dispatches \
+            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"${HANDOFF_EPOCH}\"}}"
+
+          echo
+          echo "Session 2 has been dispatched."
+
+          # -----------------------------------------------------
+          # Wait until exactly 10 minutes from stream start.
+          # -----------------------------------------------------
+
+          NOW=$(date +%s)
+          REMAINING=$((HANDOFF_EPOCH - NOW))
+
+          if [ "$REMAINING" -gt 0 ]; then
+            echo "Waiting ${REMAINING} seconds..."
+            sleep "$REMAINING"
+          fi
+
+          echo "Stopping Session 1..."
+
+          kill "$FFMPEG_PID" || true
+
+          wait "$FFMPEG_PID" || true
+
+          echo "Session 1 finished."
