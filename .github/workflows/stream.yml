@@ -70,7 +70,7 @@ jobs:
 
 
       # ==========================================================
-      # 3. Check ORIGINAL video parameters
+      # 3. Check original video parameters
       # ==========================================================
 
       - name: Check original video parameters
@@ -114,12 +114,11 @@ jobs:
 
 
       # ==========================================================
-      # 4. Create concat playlist
+      # 4. Create playlist
       # ==========================================================
 
       - name: Create playlist
         run: |
-          set -e
 
           echo "file 'video1.mp4'" > playlist.txt
           echo "file 'video2.mp4'" >> playlist.txt
@@ -134,54 +133,7 @@ jobs:
 
 
       # ==========================================================
-      # 5. Create ONE combined file WITHOUT re-encoding
-      # ==========================================================
-
-      - name: Build lossless playlist
-        run: |
-          set -e
-
-          echo ""
-          echo "=========================================="
-          echo "Building playlist WITHOUT re-encoding"
-          echo "=========================================="
-
-          START=$(date +%s)
-
-          ffmpeg \
-            -y \
-            -f concat \
-            -safe 0 \
-            -i playlist.txt \
-            -map 0:v:0 \
-            -map 0:a:0 \
-            -c copy \
-            -movflags +faststart \
-            playlist.mp4
-
-          END=$(date +%s)
-
-          echo ""
-          echo "Playlist created."
-          echo "Processing time: $((END-START)) seconds."
-          echo ""
-
-          ls -lh playlist.mp4
-
-          echo ""
-          echo "Playlist parameters:"
-          echo ""
-
-          ffprobe \
-            -v error \
-            -show_entries \
-            stream=index,codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,time_base,bit_rate,sample_rate,channels,channel_layout \
-            -of default=noprint_wrappers=1 \
-            playlist.mp4
-
-
-      # ==========================================================
-      # 6. Start YouTube stream
+      # 5. Start infinite YouTube stream
       # ==========================================================
 
       - name: Start YouTube stream
@@ -210,18 +162,30 @@ jobs:
           echo "INFINITE LOOP"
           echo ""
 
-          echo "IMPORTANT:"
+          echo "Original video streams:"
+          echo "H.264"
+          echo "1920x1080"
+          echo "60 FPS"
+          echo "Original video bitrate"
+          echo ""
+          echo "Original audio:"
+          echo "AAC"
+          echo "44.1 kHz"
+          echo "Stereo"
+          echo "Original audio bitrate"
+          echo ""
           echo "No video re-encoding."
           echo "No audio re-encoding."
-          echo "Original FPS preserved."
-          echo "Original bitrate preserved."
+          echo "CPU load minimized."
           echo ""
 
           ffmpeg \
             -re \
             -stream_loop -1 \
             -fflags +genpts \
-            -i playlist.mp4 \
+            -f concat \
+            -safe 0 \
+            -i playlist.txt \
             -map 0:v:0 \
             -map 0:a:0 \
             -c copy \
