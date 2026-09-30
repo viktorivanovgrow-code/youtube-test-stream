@@ -1,3 +1,4 @@
+```yaml
 name: Check Runner Disk
 
 on:
@@ -8,23 +9,347 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Check disk space
+
+      # ============================================================
+      # 1. ОСНОВНАЯ ИНФОРМАЦИЯ О RUNNER
+      # ============================================================
+
+      - name: Runner information
         run: |
-          echo "===== DISK ====="
+          echo "=========================================="
+          echo "RUNNER INFORMATION"
+          echo "=========================================="
+
+          echo ""
+          echo "--- OS ---"
+          cat /etc/os-release
+
+          echo ""
+          echo "--- Kernel ---"
+          uname -a
+
+          echo ""
+          echo "--- CPU ---"
+          nproc
+          lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core' | head -10
+
+          echo ""
+          echo "--- RAM ---"
+          free -h
+
+
+      # ============================================================
+      # 2. ДИСК ДО FFmpeg
+      # ============================================================
+
+      - name: Disk BEFORE FFmpeg
+        run: |
+          echo "=========================================="
+          echo "DISK BEFORE FFMPEG"
+          echo "=========================================="
+
+          echo ""
+          echo "--- df -h / ---"
           df -h /
 
           echo ""
-          echo "===== BLOCK DEVICE ====="
-          lsblk
-
-          echo ""
-          echo "===== TOP DIRECTORIES ====="
-          sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -20
-
-          echo ""
-          echo "===== RUNNER DIRECTORIES ====="
-          du -sh /home/runner/* 2>/dev/null | sort -h
-
-          echo ""
-          echo "===== FREE SPACE IN BYTES ====="
+          echo "--- df -B1 / ---"
           df -B1 /
+
+          echo ""
+          echo "--- df -i / ---"
+          df -i /
+
+
+      # ============================================================
+      # 3. ВСЕ ОСНОВНЫЕ РАЗДЕЛЫ / MOUNT POINTS
+      # ============================================================
+
+      - name: All filesystems
+        run: |
+          echo "=========================================="
+          echo "ALL FILESYSTEMS"
+          echo "=========================================="
+
+          df -hT
+
+
+      # ============================================================
+      # 4. РАЗМЕР ОСНОВНЫХ КАТАЛОГОВ ROOT
+      # ============================================================
+
+      - name: Root directories
+        run: |
+          echo "=========================================="
+          echo "ROOT DIRECTORIES"
+          echo "=========================================="
+
+          sudo du -xh --max-depth=1 / 2>/dev/null | sort -h
+
+
+      # ============================================================
+      # 5. /home
+      # ============================================================
+
+      - name: Home directory
+        run: |
+          echo "=========================================="
+          echo "/HOME"
+          echo "=========================================="
+
+          sudo du -xh --max-depth=2 /home 2>/dev/null | sort -h | tail -50
+
+
+      # ============================================================
+      # 6. /home/runner
+      # ============================================================
+
+      - name: Runner directory
+        run: |
+          echo "=========================================="
+          echo "/HOME/RUNNER"
+          echo "=========================================="
+
+          sudo du -xh --max-depth=2 /home/runner 2>/dev/null | sort -h | tail -100
+
+
+      # ============================================================
+      # 7. /home/runner/work
+      # ============================================================
+
+      - name: GitHub workspace
+        run: |
+          echo "=========================================="
+          echo "/HOME/RUNNER/WORK"
+          echo "=========================================="
+
+          if [ -d "/home/runner/work" ]; then
+            sudo du -xh --max-depth=3 /home/runner/work 2>/dev/null | sort -h | tail -100
+          else
+            echo "/home/runner/work does not exist"
+          fi
+
+
+      # ============================================================
+      # 8. /tmp
+      # ============================================================
+
+      - name: TMP directory
+        run: |
+          echo "=========================================="
+          echo "/TMP"
+          echo "=========================================="
+
+          sudo du -xh --max-depth=2 /tmp 2>/dev/null | sort -h | tail -100
+
+
+      # ============================================================
+      # 9. /var
+      # ============================================================
+
+      - name: VAR directory
+        run: |
+          echo "=========================================="
+          echo "/VAR"
+          echo "=========================================="
+
+          sudo du -xh --max-depth=2 /var 2>/dev/null | sort -h | tail -100
+
+
+      # ============================================================
+      # 10. APT CACHE
+      # ============================================================
+
+      - name: APT cache
+        run: |
+          echo "=========================================="
+          echo "APT CACHE"
+          echo "=========================================="
+
+          if [ -d "/var/cache/apt" ]; then
+            sudo du -sh /var/cache/apt 2>/dev/null
+          fi
+
+
+      # ============================================================
+      # 11. DOCKER
+      # ============================================================
+
+      - name: Docker disk usage
+        run: |
+          echo "=========================================="
+          echo "DOCKER"
+          echo "=========================================="
+
+          if command -v docker >/dev/null 2>&1; then
+
+            echo ""
+            echo "--- Docker version ---"
+            docker --version
+
+            echo ""
+            echo "--- Docker system df ---"
+            docker system df 2>/dev/null || true
+
+            echo ""
+            echo "--- Docker directory ---"
+            if [ -d "/var/lib/docker" ]; then
+              sudo du -xh --max-depth=2 /var/lib/docker 2>/dev/null | sort -h | tail -100
+            fi
+
+          else
+            echo "Docker is not installed"
+          fi
+
+
+      # ============================================================
+      # 12. RESTORE FFmpeg CACHE
+      # ============================================================
+
+      - name: Restore FFmpeg cache
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-static-v1
+
+
+      # ============================================================
+      # 13. РАЗМЕР FFmpeg CACHE
+      # ============================================================
+
+      - name: FFmpeg cache size
+        run: |
+          echo "=========================================="
+          echo "FFMPEG CACHE"
+          echo "=========================================="
+
+          if [ -d "$HOME/ffmpeg" ]; then
+
+            echo ""
+            echo "--- FFmpeg total size ---"
+            du -sh "$HOME/ffmpeg"
+
+            echo ""
+            echo "--- FFmpeg files ---"
+            du -ah "$HOME/ffmpeg" | sort -h
+
+            echo ""
+            echo "--- FFmpeg executable ---"
+            ls -lh "$HOME/ffmpeg/ffmpeg" 2>/dev/null || true
+
+            echo ""
+            echo "--- FFprobe executable ---"
+            ls -lh "$HOME/ffmpeg/ffprobe" 2>/dev/null || true
+
+          else
+            echo "FFmpeg cache was NOT restored."
+            echo "Cache key: ffmpeg-static-v1"
+          fi
+
+
+      # ============================================================
+      # 14. ДИСК ПОСЛЕ FFmpeg CACHE
+      # ============================================================
+
+      - name: Disk AFTER FFmpeg
+        run: |
+          echo "=========================================="
+          echo "DISK AFTER FFMPEG"
+          echo "=========================================="
+
+          echo ""
+          echo "--- df -h / ---"
+          df -h /
+
+          echo ""
+          echo "--- df -B1 / ---"
+          df -B1 /
+
+          echo ""
+          echo "--- Available space in GB ---"
+
+          AVAILABLE=$(df -B1 / | awk 'NR==2 {print $4}')
+          AVAILABLE_GB=$(awk "BEGIN {printf \"%.2f\", $AVAILABLE/1024/1024/1024}")
+
+          echo "Available: ${AVAILABLE_GB} GB"
+
+
+      # ============================================================
+      # 15. СКОЛЬКО МАКСИМАЛЬНО МОЖЕТ ЗАНИМАТЬ ВИДЕО
+      # ============================================================
+
+      - name: Calculate safe video size
+        run: |
+          echo "=========================================="
+          echo "VIDEO SIZE ESTIMATION"
+          echo "=========================================="
+
+          AVAILABLE=$(df -B1 / | awk 'NR==2 {print $4}')
+
+          AVAILABLE_GB=$(awk "BEGIN {printf \"%.2f\", $AVAILABLE/1024/1024/1024}")
+
+          # Оставляем 1 GB свободного пространства как минимальный запас.
+          SAFE=$((AVAILABLE - 1073741824))
+
+          SAFE_GB=$(awk "BEGIN {printf \"%.2f\", $SAFE/1024/1024/1024}")
+
+          echo ""
+          echo "Currently available:"
+          echo "${AVAILABLE_GB} GB"
+
+          echo ""
+          echo "Approximate maximum video size with 1 GB reserve:"
+          echo "${SAFE_GB} GB"
+
+          echo ""
+          echo "IMPORTANT:"
+          echo "This is an estimate."
+          echo "Real safe video size should be smaller because"
+          echo "temporary files and filesystem overhead may appear."
+
+
+      # ============================================================
+      # 16. ИТОГОВЫЙ КРАТКИЙ ОТЧЁТ
+      # ============================================================
+
+      - name: FINAL SUMMARY
+        run: |
+          echo ""
+          echo "============================================================"
+          echo "FINAL RUNNER DISK SUMMARY"
+          echo "============================================================"
+
+          echo ""
+          echo "Filesystem:"
+          df -h /
+
+          echo ""
+          echo "FFmpeg:"
+          if [ -d "$HOME/ffmpeg" ]; then
+            du -sh "$HOME/ffmpeg"
+          else
+            echo "FFmpeg cache not found"
+          fi
+
+          echo ""
+          echo "GitHub workspace:"
+          if [ -d "/home/runner/work" ]; then
+            du -sh /home/runner/work
+          fi
+
+          echo ""
+          echo "TMP:"
+          du -sh /tmp
+
+          echo ""
+          echo "Docker:"
+          if [ -d "/var/lib/docker" ]; then
+            sudo du -sh /var/lib/docker
+          else
+            echo "Docker directory not found"
+          fi
+
+          echo ""
+          echo "============================================================"
+```
