@@ -1,0 +1,127 @@
+name: Test FFmpeg Playback
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-ffmpeg:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Select random video
+        id: select
+        shell: bash
+        run: |
+          set -e
+
+          VIDEO_URL=$(python3 -c '
+          import json
+          import random
+
+          with open("playlist.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          videos = data["videos"]
+
+          if not videos:
+              raise SystemExit("ERROR: playlist is empty")
+
+          print(random.choice(videos))
+          ')
+
+          echo "Selected video:"
+          echo "$VIDEO_URL"
+
+          {
+            echo "video_url<<EOF"
+            echo "$VIDEO_URL"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download video
+        shell: bash
+        run: |
+          set -e
+
+          URL="${{ steps.select.outputs.video_url }}"
+
+          echo "Downloading:"
+          echo "$URL"
+          echo
+
+          wget \
+            --tries=3 \
+            --timeout=30 \
+            --progress=bar:force:noscroll \
+            -O test_video.mp4 \
+            "$URL"
+
+      - name: Get video duration
+        id: duration
+        shell: bash
+        run: |
+          set -e
+
+          DURATION=$(ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 \
+            test_video.mp4)
+
+          echo "Video duration: $DURATION seconds"
+
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+
+      - name: Test realtime playback
+        shell: bash
+        run: |
+          set -e
+
+          echo
+          echo "========================================"
+          echo "REALTIME FFMPEG TEST"
+          echo "========================================"
+          echo "Duration: ${{ steps.duration.outputs.duration }} seconds"
+          echo "Mode: -re"
+          echo "Video/audio: -c copy"
+          echo "Output: null"
+          echo "========================================"
+          echo
+
+          START=$(date +%s)
+
+          ffmpeg \
+            -hide_banner \
+            -re \
+            -i test_video.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f null \
+            -
+
+          END=$(date +%s)
+
+          ELAPSED=$((END - START))
+
+          echo
+          echo "========================================"
+          echo "PLAYBACK RESULT"
+          echo "========================================"
+          echo "Expected duration: ${{ steps.duration.outputs.duration }} sec"
+          echo "Actual wall time:  ${ELAPSED} sec"
+          echo "========================================"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f test_video.mp4
+          echo "Downloaded video removed."
