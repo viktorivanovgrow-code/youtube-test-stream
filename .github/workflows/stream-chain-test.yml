@@ -18,16 +18,18 @@ jobs:
 
     steps:
 
-      # ------------------------------------------------------------
-      # 1. Checkout
-      # ------------------------------------------------------------
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ------------------------------------------------------------
-      # 2. Install FFmpeg
-      # ------------------------------------------------------------
+      # ============================================================
+      # 2. RESTORE / INSTALL FFMPEG
+      # ============================================================
+
       - name: Restore FFmpeg cache
         id: ffmpeg-cache
         uses: actions/cache@v4
@@ -44,16 +46,19 @@ jobs:
             https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
             -O /tmp/ffmpeg.tar.xz
 
-          tar -xf /tmp/ffmpeg.tar.xz -C ~/ffmpeg --strip-components=1
+          tar -xf /tmp/ffmpeg.tar.xz \
+            -C ~/ffmpeg \
+            --strip-components=1
 
       - name: Add FFmpeg to PATH
         run: |
           echo "$HOME/ffmpeg/bin" >> "$GITHUB_PATH"
 
 
-      # ------------------------------------------------------------
-      # 3. Select random video
-      # ------------------------------------------------------------
+      # ============================================================
+      # 3. SELECT RANDOM VIDEO
+      # ============================================================
+
       - name: Select random video
         id: select
         run: |
@@ -62,24 +67,38 @@ jobs:
           import random
 
           with open("playlist.json", "r", encoding="utf-8") as f:
-              playlist = json.load(f)
+              data = json.load(f)
 
-          print(random.choice(playlist))
+          playlist = data["videos"]
+
+          if not playlist:
+              raise RuntimeError("playlist.json: список videos пуст")
+
+          VIDEO_URL = random.choice(playlist)
+
+          print(VIDEO_URL)
           PY
           )
 
           echo "VIDEO_URL=$VIDEO_URL" >> "$GITHUB_ENV"
 
-          echo "Selected video:"
+          echo
+          echo "=========================================="
+          echo "SELECTED VIDEO"
+          echo "=========================================="
           echo "$VIDEO_URL"
+          echo
 
 
-      # ------------------------------------------------------------
-      # 4. Download video completely
-      # ------------------------------------------------------------
+      # ============================================================
+      # 4. DOWNLOAD VIDEO
+      # ============================================================
+
       - name: Download video
         run: |
           rm -f stream_video.mp4
+
+          echo "Downloading video..."
 
           wget \
             --progress=dot:giga \
@@ -87,16 +106,36 @@ jobs:
             -O stream_video.mp4
 
           echo
-          echo "Downloaded:"
+          echo "Download completed."
+
           ls -lh stream_video.mp4
 
 
-      # ------------------------------------------------------------
-      # 5. Probe actual duration
-      # ------------------------------------------------------------
-      - name: Get video duration
+      # ============================================================
+      # 5. PROBE VIDEO
+      # ============================================================
+
+      - name: Probe video
         id: probe
         run: |
+          echo "=========================================="
+          echo "VIDEO INFORMATION"
+          echo "=========================================="
+
+          ffprobe \
+            -v error \
+            -show_entries \
+            stream=index,codec_name,width,height,r_frame_rate,bit_rate \
+            -show_entries \
+            format=duration,size \
+            -of default=noprint_wrappers=1 \
+            stream_video.mp4
+
+          echo
+          echo "=========================================="
+          echo "DURATION"
+          echo "=========================================="
+
           DURATION=$(ffprobe \
             -v error \
             -show_entries format=duration \
@@ -105,97 +144,155 @@ jobs:
 
           DURATION_INT=$(printf "%.0f" "$DURATION")
 
-          echo "Exact duration: $DURATION seconds"
+          echo "Exact duration:   $DURATION seconds"
           echo "Rounded duration: $DURATION_INT seconds"
 
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "duration_int=$DURATION_INT" >> "$GITHUB_OUTPUT"
 
 
-      # ------------------------------------------------------------
-      # 6. Calculate timing
-      # ------------------------------------------------------------
+      # ============================================================
+      # 6. CALCULATE TIMING
+      # ============================================================
+
       - name: Calculate timing
         id: timing
         env:
           INPUT_HANDOFF: ${{ inputs.handoff_epoch }}
           DURATION_INT: ${{ steps.probe.outputs.duration_int }}
         run: |
-          # ==========================================================
+
+          # ========================================================
           # SETTINGS
-          # ==========================================================
+          # ========================================================
 
           PREP_LEAD=180
           OVERLAP=15
 
-          echo "Preparation lead: ${PREP_LEAD}s"
-          echo "Overlap: ${OVERLAP}s"
+          echo
+          echo "=========================================="
+          echo "STREAM SETTINGS"
+          echo "=========================================="
+          echo "Preparation lead : ${PREP_LEAD} seconds"
+          echo "Overlap          : ${OVERLAP} seconds"
+          echo "=========================================="
+          echo
 
-          # ==========================================================
+          # ========================================================
           # START TIME
-          # ==========================================================
+          # ========================================================
 
           if [ "$INPUT_HANDOFF" = "0" ]; then
+
             START_EPOCH=$(date +%s)
-            echo "This is the first action."
+
+            echo "First Action."
             echo "Starting immediately."
+
           else
+
             START_EPOCH="$INPUT_HANDOFF"
-            echo "This is a chained action."
-            echo "Scheduled start: $START_EPOCH"
+
+            echo "Chained Action."
+            echo "Scheduled start:"
+            date -d "@$START_EPOCH"
+
           fi
 
-          # ==========================================================
+
+          # ========================================================
           # END TIME
-          # ==========================================================
+          # ========================================================
 
           END_EPOCH=$((START_EPOCH + DURATION_INT))
 
-          # ==========================================================
-          # NEXT ACTION START
-          #
-          # Next Action is launched 180 sec before our end.
-          # But it actually starts FFmpeg 15 sec before our end.
-          # ==========================================================
 
-          B_START_EPOCH=$((END_EPOCH - OVERLAP))
+          # ========================================================
+          # NEXT ACTION
+          #
+          # The next Action is DISPATCHED 180 seconds before
+          # our expected end.
+          #
+          # But the next FFmpeg starts 15 seconds before
+          # our expected end.
+          # ========================================================
+
+          NEXT_START_EPOCH=$((END_EPOCH - OVERLAP))
 
           DISPATCH_EPOCH=$((END_EPOCH - PREP_LEAD))
 
-          # If the video is shorter than PREP_LEAD,
-          # dispatch the next Action immediately.
+
+          # ========================================================
+          # SHORT VIDEO PROTECTION
+          #
+          # If video is shorter than PREP_LEAD,
+          # dispatch immediately.
+          # ========================================================
+
           if [ "$DISPATCH_EPOCH" -lt "$START_EPOCH" ]; then
             DISPATCH_EPOCH="$START_EPOCH"
           fi
+
+
+          # ========================================================
+          # PRINT TIMING
+          # ========================================================
 
           echo
           echo "=========================================="
           echo "TIMING"
           echo "=========================================="
-          echo "START:           $START_EPOCH"
-          echo "END:             $END_EPOCH"
-          echo "NEXT PREP:       $DISPATCH_EPOCH"
-          echo "NEXT FFmpeg:     $B_START_EPOCH"
-          echo "PREP LEAD:       ${PREP_LEAD}s"
-          echo "OVERLAP:         ${OVERLAP}s"
+
+          echo "Start:"
+          date -d "@$START_EPOCH"
+
+          echo
+          echo "End:"
+          date -d "@$END_EPOCH"
+
+          echo
+          echo "Next Action preparation:"
+          date -d "@$DISPATCH_EPOCH"
+
+          echo
+          echo "Next FFmpeg start:"
+          date -d "@$NEXT_START_EPOCH"
+
+          echo
           echo "=========================================="
+          echo "UNIX TIMESTAMPS"
+          echo "=========================================="
+
+          echo "START_EPOCH       = $START_EPOCH"
+          echo "END_EPOCH         = $END_EPOCH"
+          echo "DISPATCH_EPOCH    = $DISPATCH_EPOCH"
+          echo "NEXT_START_EPOCH  = $NEXT_START_EPOCH"
+
+          echo
+          echo "Preparation lead: ${PREP_LEAD}s"
+          echo "Overlap: ${OVERLAP}s"
 
           echo "start_epoch=$START_EPOCH" >> "$GITHUB_OUTPUT"
           echo "end_epoch=$END_EPOCH" >> "$GITHUB_OUTPUT"
           echo "dispatch_epoch=$DISPATCH_EPOCH" >> "$GITHUB_OUTPUT"
-          echo "next_start_epoch=$B_START_EPOCH" >> "$GITHUB_OUTPUT"
+          echo "next_start_epoch=$NEXT_START_EPOCH" >> "$GITHUB_OUTPUT"
 
 
-      # ------------------------------------------------------------
-      # 7. Wait for scheduled start
-      # ------------------------------------------------------------
+      # ============================================================
+      # 7. WAIT FOR START
+      # ============================================================
+
       - name: Wait for scheduled start
         env:
           START_EPOCH: ${{ steps.timing.outputs.start_epoch }}
         run: |
-          echo "Waiting for scheduled start..."
+
+          echo "=========================================="
+          echo "WAITING FOR START"
+          echo "=========================================="
 
           while true; do
+
             NOW=$(date +%s)
             REMAIN=$((START_EPOCH - NOW))
 
@@ -204,20 +301,27 @@ jobs:
             fi
 
             echo "Starts in ${REMAIN}s"
+
             sleep 5
+
           done
 
+          echo
           echo "START TIME REACHED."
 
 
-      # ------------------------------------------------------------
-      # 8. Start FFmpeg
-      # ------------------------------------------------------------
+      # ============================================================
+      # 8. START FFMPEG
+      # ============================================================
+
       - name: Start YouTube stream
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         run: |
-          echo "Starting FFmpeg..."
+
+          echo "=========================================="
+          echo "STARTING FFMPEG"
+          echo "=========================================="
 
           ffmpeg \
             -hide_banner \
@@ -237,18 +341,26 @@ jobs:
 
           echo "FFmpeg PID: $FFMPEG_PID"
 
+          echo
+          echo "Stream started."
 
-      # ------------------------------------------------------------
-      # 9. Wait until it is time to prepare next Action
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 9. WAIT UNTIL NEXT ACTION PREPARATION TIME
+      # ============================================================
+
       - name: Wait until next Action preparation
         env:
           DISPATCH_EPOCH: ${{ steps.timing.outputs.dispatch_epoch }}
-          END_EPOCH: ${{ steps.timing.outputs.end_epoch }}
         run: |
-          echo "Waiting until next Action preparation time..."
+
+          echo
+          echo "=========================================="
+          echo "WAITING FOR NEXT ACTION PREPARATION"
+          echo "=========================================="
 
           while true; do
+
             NOW=$(date +%s)
             REMAIN=$((DISPATCH_EPOCH - NOW))
 
@@ -257,53 +369,68 @@ jobs:
             fi
 
             echo "Next Action will be prepared in ${REMAIN}s"
+
             sleep 10
+
           done
 
+          echo
+          echo "PREPARATION TIME REACHED."
 
-      # ------------------------------------------------------------
-      # 10. Dispatch next Action
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 10. DISPATCH NEXT ACTION
+      # ============================================================
+
       - name: Dispatch next Action
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_START_EPOCH: ${{ steps.timing.outputs.next_start_epoch }}
         run: |
+
+          echo
           echo "=========================================="
-          echo "PREPARING NEXT ACTION"
+          echo "DISPATCHING NEXT ACTION"
           echo "=========================================="
 
-          echo "Next FFmpeg start:"
+          echo "Next FFmpeg will start at:"
           date -d "@$NEXT_START_EPOCH"
 
           echo
-          echo "Dispatching next workflow..."
+          echo "Starting next GitHub Actions run..."
 
-          curl -L \
+          RESPONSE=$(curl -sS \
+            -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
-            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$NEXT_START_EPOCH\"}}"
+            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$NEXT_START_EPOCH\"}}")
+
+          echo "GitHub API response:"
+          echo "$RESPONSE"
 
           echo
-          echo "Next Action dispatched."
+          echo "NEXT ACTION DISPATCHED."
 
 
-      # ------------------------------------------------------------
-      # 11. Wait until current video ends
-      # ------------------------------------------------------------
+      # ============================================================
+      # 11. WAIT UNTIL CURRENT VIDEO END
+      # ============================================================
+
       - name: Wait until current video ends
         env:
           END_EPOCH: ${{ steps.timing.outputs.end_epoch }}
         run: |
+
           echo
           echo "=========================================="
-          echo "CURRENT STREAM"
+          echo "CURRENT STREAM RUNNING"
           echo "=========================================="
 
           while true; do
+
             NOW=$(date +%s)
             REMAIN=$((END_EPOCH - NOW))
 
@@ -314,45 +441,73 @@ jobs:
             echo "Current video ends in ${REMAIN}s"
 
             sleep 10
+
           done
 
           echo
           echo "CURRENT VIDEO END TIME REACHED."
 
 
-      # ------------------------------------------------------------
-      # 12. Stop current FFmpeg
-      # ------------------------------------------------------------
+      # ============================================================
+      # 12. STOP CURRENT FFMPEG
+      # ============================================================
+
       - name: Stop current FFmpeg
         run: |
+
+          echo
+          echo "=========================================="
+          echo "STOPPING CURRENT FFMPEG"
+          echo "=========================================="
+
           if [ -f ffmpeg.pid ]; then
 
             PID=$(cat ffmpeg.pid)
 
-            echo "Stopping FFmpeg PID: $PID"
+            echo "FFmpeg PID: $PID"
 
-            kill "$PID" 2>/dev/null || true
+            if kill -0 "$PID" 2>/dev/null; then
 
-            sleep 2
+              echo "Stopping FFmpeg..."
 
-            kill -9 "$PID" 2>/dev/null || true
+              kill "$PID" 2>/dev/null || true
+
+              sleep 2
+
+              kill -9 "$PID" 2>/dev/null || true
+
+            else
+
+              echo "FFmpeg already finished."
+
+            fi
+
+          else
+
+            echo "FFmpeg PID file not found."
 
           fi
 
 
-      # ------------------------------------------------------------
-      # 13. Show FFmpeg log
-      # ------------------------------------------------------------
+      # ============================================================
+      # 13. SHOW FFMPEG LOG
+      # ============================================================
+
       - name: Show FFmpeg log
         if: always()
         run: |
+
           echo
           echo "=========================================="
           echo "FFMPEG LOG"
           echo "=========================================="
 
           if [ -f ffmpeg.log ]; then
-            tail -100 ffmpeg.log
+
+            tail -150 ffmpeg.log
+
           else
+
             echo "No FFmpeg log found."
+
           fi
