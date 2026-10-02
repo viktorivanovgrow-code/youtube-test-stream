@@ -1,0 +1,137 @@
+name: Test YouTube Stream
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stream-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Select random video
+        id: select
+        shell: bash
+        run: |
+          set -e
+
+          VIDEO_URL=$(python3 -c '
+          import json
+          import random
+
+          with open("playlist.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          videos = data["videos"]
+
+          if not videos:
+              raise SystemExit("ERROR: playlist is empty")
+
+          print(random.choice(videos))
+          ')
+
+          echo "Selected video:"
+          echo "$VIDEO_URL"
+
+          {
+            echo "video_url<<EOF"
+            echo "$VIDEO_URL"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download video
+        shell: bash
+        run: |
+          set -e
+
+          URL="${{ steps.select.outputs.video_url }}"
+
+          echo "========================================"
+          echo "DOWNLOADING VIDEO"
+          echo "========================================"
+          echo "$URL"
+          echo
+
+          wget \
+            --tries=3 \
+            --timeout=30 \
+            --progress=bar:force:noscroll \
+            -O test_video.mp4 \
+            "$URL"
+
+          echo
+          echo "Download completed."
+
+      - name: Analyze video
+        id: video
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "VIDEO INFORMATION"
+          echo "========================================"
+
+          ffprobe \
+            -v error \
+            -show_entries format=duration,size \
+            -show_entries stream=index,codec_type,codec_name,width,height,r_frame_rate,bit_rate,pix_fmt,sample_rate,channels \
+            -of default=noprint_wrappers=1 \
+            test_video.mp4
+
+          DURATION=$(ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 \
+            test_video.mp4)
+
+          echo
+          echo "Duration: $DURATION seconds"
+
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+
+      - name: Start YouTube stream
+        shell: bash
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          set -e
+
+          if [ -z "$YOUTUBE_STREAM_KEY" ]; then
+            echo "ERROR: YOUTUBE_STREAM_KEY secret is empty"
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "STARTING YOUTUBE STREAM"
+          echo "========================================"
+          echo "Duration: ${{ steps.video.outputs.duration }} seconds"
+          echo "Mode: realtime"
+          echo "Video: copy"
+          echo "Audio: copy"
+          echo "========================================"
+          echo
+
+          ffmpeg \
+            -hide_banner \
+            -loglevel info \
+            -re \
+            -i test_video.mp4 \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f test_video.mp4
+          echo "Downloaded video removed."
