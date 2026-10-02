@@ -94,14 +94,6 @@ jobs:
 
           "$HOME/ffmpeg/bin/ffprobe" -version | head -3
 
-          echo
-          echo "FFmpeg path:"
-          ls -lh "$HOME/ffmpeg/bin/ffmpeg"
-
-          echo
-          echo "FFprobe path:"
-          ls -lh "$HOME/ffmpeg/bin/ffprobe"
-
 
       # ============================================================
       # 5. SELECT RANDOM VIDEO
@@ -196,8 +188,18 @@ jobs:
               stream_video.mp4
           )
 
-          DURATION_INT=$(printf "%.0f" "$DURATION")
+          # Округляем вверх, чтобы рассчитанное окончание
+          # никогда не наступило раньше реального конца файла.
+          DURATION_INT=$(python3 - "$DURATION" <<'PY'
+          import sys
+          import math
 
+          duration = float(sys.argv[1])
+          print(math.ceil(duration))
+          PY
+          )
+
+          echo
           echo "Exact duration:   $DURATION seconds"
           echo "Rounded duration: $DURATION_INT seconds"
 
@@ -216,12 +218,12 @@ jobs:
           DURATION_INT: ${{ steps.probe.outputs.duration_int }}
         run: |
 
-          # --------------------------------------------------------
+          # ========================================================
           # SETTINGS
-          # --------------------------------------------------------
+          # ========================================================
 
           PREP_LEAD=180
-          OVERLAP=15
+          OVERLAP=2
 
           echo
           echo "=========================================="
@@ -232,9 +234,9 @@ jobs:
           echo "Overlap          : ${OVERLAP}s"
 
 
-          # --------------------------------------------------------
-          # START
-          # --------------------------------------------------------
+          # ========================================================
+          # START TIME
+          # ========================================================
 
           if [ "$INPUT_HANDOFF" = "0" ]; then
 
@@ -256,50 +258,55 @@ jobs:
           fi
 
 
-          # --------------------------------------------------------
-          # END
-          # --------------------------------------------------------
+          # ========================================================
+          # CURRENT VIDEO END
+          # ========================================================
 
           END_EPOCH=$((START_EPOCH + DURATION_INT))
 
 
-          # --------------------------------------------------------
-          # NEXT ACTION START
-          # --------------------------------------------------------
+          # ========================================================
+          # NEXT ACTION FFMPEG START
+          #
+          # Only 2 seconds of overlap.
+          # ========================================================
 
           NEXT_START_EPOCH=$((END_EPOCH - OVERLAP))
 
 
-          # --------------------------------------------------------
-          # NEXT ACTION DISPATCH
-          # --------------------------------------------------------
+          # ========================================================
+          # NEXT ACTION PREPARATION
+          #
+          # Start the next GitHub Action 180 seconds before
+          # the current video is expected to end.
+          # ========================================================
 
           DISPATCH_EPOCH=$((END_EPOCH - PREP_LEAD))
 
 
-          # --------------------------------------------------------
+          # ========================================================
           # SHORT VIDEO PROTECTION
-          # --------------------------------------------------------
+          # ========================================================
 
           if [ "$DISPATCH_EPOCH" -lt "$START_EPOCH" ]; then
             DISPATCH_EPOCH="$START_EPOCH"
           fi
 
 
-          # --------------------------------------------------------
-          # SHOW TIMING
-          # --------------------------------------------------------
+          # ========================================================
+          # TIMING INFORMATION
+          # ========================================================
 
           echo
           echo "=========================================="
           echo "TIMING"
           echo "=========================================="
 
-          echo "Start:"
+          echo "Current start:"
           date -d "@$START_EPOCH"
 
           echo
-          echo "End:"
+          echo "Current end:"
           date -d "@$END_EPOCH"
 
           echo
@@ -311,10 +318,14 @@ jobs:
           date -d "@$NEXT_START_EPOCH"
 
           echo
-          echo "Start epoch:          $START_EPOCH"
-          echo "End epoch:            $END_EPOCH"
-          echo "Dispatch epoch:       $DISPATCH_EPOCH"
-          echo "Next start epoch:     $NEXT_START_EPOCH"
+          echo "=========================================="
+          echo "UNIX TIMESTAMPS"
+          echo "=========================================="
+
+          echo "START_EPOCH      = $START_EPOCH"
+          echo "END_EPOCH        = $END_EPOCH"
+          echo "DISPATCH_EPOCH   = $DISPATCH_EPOCH"
+          echo "NEXT_START_EPOCH = $NEXT_START_EPOCH"
 
           echo
           echo "Preparation lead: ${PREP_LEAD}s"
@@ -327,7 +338,7 @@ jobs:
 
 
       # ============================================================
-      # 9. WAIT FOR START
+      # 9. WAIT FOR SCHEDULED START
       # ============================================================
 
       - name: Wait for scheduled start
@@ -396,7 +407,7 @@ jobs:
 
 
       # ============================================================
-      # 11. WAIT UNTIL PREPARATION TIME
+      # 11. WAIT UNTIL NEXT ACTION PREPARATION
       # ============================================================
 
       - name: Wait until next Action preparation
@@ -443,7 +454,7 @@ jobs:
           echo "DISPATCHING NEXT ACTION"
           echo "=========================================="
 
-          echo "Next FFmpeg start:"
+          echo "Next FFmpeg will start at:"
           date -d "@$NEXT_START_EPOCH"
 
           echo
@@ -463,7 +474,7 @@ jobs:
 
 
       # ============================================================
-      # 13. WAIT UNTIL END
+      # 13. WAIT UNTIL CURRENT VIDEO END
       # ============================================================
 
       - name: Wait until current video ends
@@ -487,7 +498,7 @@ jobs:
 
             echo "Current video ends in ${REMAIN}s"
 
-            sleep 10
+            sleep 5
 
           done
 
@@ -521,7 +532,9 @@ jobs:
 
               sleep 2
 
-              kill -9 "$PID" 2>/dev/null || true
+              if kill -0 "$PID" 2>/dev/null; then
+                kill -9 "$PID" 2>/dev/null || true
+              fi
 
             else
 
