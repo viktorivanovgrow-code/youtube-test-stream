@@ -1,0 +1,592 @@
+name: YouTube Stream
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_index:
+        description: "Playlist start index"
+        required: false
+        default: "0"
+
+      seed:
+        description: "Shuffle seed"
+        required: false
+        default: ""
+
+      handoff_at:
+        description: "Unix timestamp for handoff"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  stream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # FFMPEG CACHE
+      # ============================================================
+
+      - name: Restore FFmpeg cache
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-static-v2
+
+
+      # ============================================================
+      # INSTALL FFMPEG
+      # ============================================================
+
+      - name: Install FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$HOME/ffmpeg"
+
+          wget -q \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+            -O /tmp/ffmpeg.tar.xz
+
+          tar -xJf /tmp/ffmpeg.tar.xz \
+            --strip-components=1 \
+            -C "$HOME/ffmpeg"
+
+
+      # ============================================================
+      # VERIFY FFMPEG
+      # ============================================================
+
+      - name: Verify FFmpeg
+        shell: bash
+        run: |
+          set -e
+
+          "$HOME/ffmpeg/bin/ffmpeg" -version | head -n 1
+          "$HOME/ffmpeg/bin/ffprobe" -version | head -n 1
+
+
+      # ============================================================
+      # PREPARE RANDOM PLAYLIST BATCH
+      # ============================================================
+
+      - name: Prepare playlist batch
+        id: playlist
+        shell: bash
+        env:
+          INPUT_INDEX: ${{ inputs.start_index }}
+          INPUT_SEED: ${{ inputs.seed }}
+        run: |
+          set -e
+
+          python3 <<'PY'
+          import json
+          import random
+          import secrets
+          import os
+
+          with open("playlist.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          videos = data.get("videos", [])
+
+          if not videos:
+              raise SystemExit("ERROR: playlist.json contains no videos")
+
+          start_index = int(os.environ.get("INPUT_INDEX", "0"))
+          seed_input = os.environ.get("INPUT_SEED", "").strip()
+
+          # ----------------------------------------------------------
+          # Create seed for the first cycle
+          # ----------------------------------------------------------
+
+          if seed_input:
+              seed = int(seed_input)
+          else:
+              seed = secrets.randbits(63)
+
+          # ----------------------------------------------------------
+          # Deterministic shuffle
+          # ----------------------------------------------------------
+
+          def make_order(seed_value):
+              order = list(videos)
+              random.Random(seed_value).shuffle(order)
+              return order
+
+          order = make_order(seed)
+
+          total = len(order)
+
+          if start_index >= total:
+              start_index = 0
+
+          # ----------------------------------------------------------
+          # Number of videos per Action
+          #
+          # 3 videos × ~6–8 minutes = ~18–24 minutes
+          #
+          # This fits inside timeout-minutes: 30.
+          # ----------------------------------------------------------
+
+          batch_size = 3
+
+          batch = order[start_index:start_index + batch_size]
+
+          if not batch:
+              raise SystemExit("ERROR: playlist batch is empty")
+
+          next_index = start_index + len(batch)
+          next_seed = seed
+
+          # ----------------------------------------------------------
+          # Entire playlist exhausted
+          # Create a completely new random cycle.
+          # ----------------------------------------------------------
+
+          if next_index >= total:
+
+              while True:
+                  next_seed = secrets.randbits(63)
+
+                  next_order = make_order(next_seed)
+
+                  # Avoid immediate repetition of the last track.
+                  if next_order[0] != batch[-1]:
+                      break
+
+              next_index = 0
+
+          # ----------------------------------------------------------
+          # Save current batch
+          # ----------------------------------------------------------
+
+          with open("batch.json", "w", encoding="utf-8") as f:
+              json.dump(
+                  batch,
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+          # ----------------------------------------------------------
+          # Output
+          # ----------------------------------------------------------
+
+          print()
+          print("========================================")
+          print("PLAYLIST")
+          print("========================================")
+          print(f"Total videos:  {total}")
+          print(f"Seed:          {seed}")
+          print(f"Start index:   {start_index}")
+          print(f"Batch size:    {len(batch)}")
+          print(f"Next index:    {next_index}")
+          print(f"Next seed:     {next_seed}")
+          print()
+          print("Current batch:")
+
+          for i, url in enumerate(batch, 1):
+              print(f"{i}. {url}")
+
+          print("========================================")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"next_index={next_index}\n")
+              out.write(f"next_seed={next_seed}\n")
+          PY
+
+
+      # ============================================================
+      # DOWNLOAD ONLY CURRENT THREE VIDEOS
+      # ============================================================
+
+      - name: Download current batch
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p videos
+
+          python3 <<'PY'
+          import json
+          import subprocess
+
+          with open("batch.json", "r", encoding="utf-8") as f:
+              urls = json.load(f)
+
+          for index, url in enumerate(urls, 1):
+
+              output = f"videos/video{index}.mp4"
+
+              print()
+              print("========================================")
+              print(f"DOWNLOADING VIDEO {index}")
+              print("========================================")
+              print(url)
+
+              subprocess.run(
+                  [
+                      "wget",
+                      "--progress=dot:giga",
+                      "--tries=3",
+                      "--timeout=60",
+                      "-O",
+                      output,
+                      url
+                  ],
+                  check=True
+              )
+
+              print(f"Downloaded: {output}")
+          PY
+
+          echo
+          echo "========================================"
+          echo "DOWNLOADED FILES"
+          echo "========================================"
+
+          ls -lh videos/
+
+
+      # ============================================================
+      # ANALYZE DURATIONS
+      # ============================================================
+
+      - name: Analyze batch
+        id: analyze
+        shell: bash
+        run: |
+          set -e
+
+          TOTAL_DURATION=0
+
+          echo
+          echo "========================================"
+          echo "VIDEO DURATIONS"
+          echo "========================================"
+
+          for FILE in videos/video*.mp4; do
+
+            DURATION=$(
+              "$HOME/ffmpeg/bin/ffprobe" \
+                -v error \
+                -show_entries format=duration \
+                -of default=noprint_wrappers=1:nokey=1 \
+                "$FILE"
+            )
+
+            echo "$(basename "$FILE"): ${DURATION}s"
+
+            TOTAL_DURATION=$(
+              python3 - "$TOTAL_DURATION" "$DURATION" <<'PY'
+          import sys
+
+          total = float(sys.argv[1])
+          duration = float(sys.argv[2])
+
+          print(total + duration)
+          PY
+            )
+
+          done
+
+          echo
+          echo "TOTAL BATCH DURATION: ${TOTAL_DURATION}s"
+
+          # ----------------------------------------------------------
+          # Safety limit.
+          #
+          # 1650 seconds = 27 min 30 sec.
+          #
+          # This leaves ~2.5 minutes for FFmpeg startup/handoff.
+          # ----------------------------------------------------------
+
+          TOO_LONG=$(
+            python3 - "$TOTAL_DURATION" <<'PY'
+          import sys
+
+          duration = float(sys.argv[1])
+
+          print("yes" if duration > 1650 else "no")
+          PY
+          )
+
+          if [ "$TOO_LONG" = "yes" ]; then
+            echo
+            echo "ERROR: Current batch is too long."
+            echo "Batch duration: ${TOTAL_DURATION}s"
+            echo "Maximum allowed: 1650s"
+            exit 1
+          fi
+
+          echo "total_duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+
+      # ============================================================
+      # CREATE CONCAT LIST
+      # ============================================================
+
+      - name: Create concat list
+        shell: bash
+        run: |
+          set -e
+
+          echo "ffconcat version 1.0" > concat.txt
+
+          for FILE in videos/video*.mp4; do
+            echo "file '$PWD/$FILE'" >> concat.txt
+          done
+
+          echo
+          echo "========================================"
+          echo "CONCAT LIST"
+          echo "========================================"
+
+          cat concat.txt
+
+
+      # ============================================================
+      # WAIT FOR HANDOFF
+      #
+      # IMPORTANT:
+      # This happens BEFORE FFmpeg starts.
+      #
+      # Therefore the next Action can prepare everything in advance
+      # while the previous Action is still streaming.
+      # ============================================================
+
+      - name: Wait for handoff
+        if: ${{ inputs.handoff_at != '0' }}
+        shell: bash
+        env:
+          HANDOFF_AT: ${{ inputs.handoff_at }}
+        run: |
+          set -e
+
+          echo
+          echo "========================================"
+          echo "WAITING FOR HANDOFF"
+          echo "========================================"
+
+          NOW=$(python3 -c 'import time; print(time.time())')
+
+          WAIT=$(
+            python3 - "$HANDOFF_AT" "$NOW" <<'PY'
+          import sys
+
+          target = float(sys.argv[1])
+          now = float(sys.argv[2])
+
+          wait = target - now
+
+          if wait < 0:
+              wait = 0
+
+          print(f"{wait:.3f}")
+          PY
+          )
+
+          echo "Current time: $NOW"
+          echo "Handoff at:   $HANDOFF_AT"
+          echo "Waiting:      $WAIT seconds"
+
+          if python3 - "$WAIT" <<'PY'
+          import sys
+
+          wait = float(sys.argv[1])
+
+          sys.exit(0 if wait > 0 else 1)
+          PY
+          then
+            sleep "$WAIT"
+          fi
+
+          echo "Handoff time reached."
+
+
+      # ============================================================
+      # START FFMPEG
+      # ============================================================
+
+      - name: Start YouTube stream
+        id: stream
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+          TOTAL_DURATION: ${{ steps.analyze.outputs.total_duration }}
+          NEXT_INDEX: ${{ steps.playlist.outputs.next_index }}
+          NEXT_SEED: ${{ steps.playlist.outputs.next_seed }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+
+          echo
+          echo "========================================"
+          echo "STARTING YOUTUBE STREAM"
+          echo "========================================"
+
+          START_TIME=$(date +%s)
+
+          # ----------------------------------------------------------
+          # Handoff is calculated from the actual start of FFmpeg.
+          #
+          # +2 sec gives the next Action a small safety margin.
+          # ----------------------------------------------------------
+
+          HANDOFF_AT=$(
+            python3 - "$START_TIME" "$TOTAL_DURATION" <<'PY'
+          import sys
+
+          start = float(sys.argv[1])
+          duration = float(sys.argv[2])
+
+          # Handoff happens just after current batch finishes.
+          handoff = start + duration + 2.0
+
+          print(f"{handoff:.3f}")
+          PY
+          )
+
+          echo "Start time:       $START_TIME"
+          echo "Batch duration:   $TOTAL_DURATION sec"
+          echo "Handoff timestamp: $HANDOFF_AT"
+
+
+          # ----------------------------------------------------------
+          # START ONE FFMPEG
+          # ----------------------------------------------------------
+
+          "$HOME/ffmpeg/bin/ffmpeg" \
+            -hide_banner \
+            -loglevel info \
+            -re \
+            -f concat \
+            -safe 0 \
+            -i concat.txt \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          FFMPEG_PID=$!
+
+          echo "FFmpeg PID: $FFMPEG_PID"
+
+
+          # ----------------------------------------------------------
+          # Give FFmpeg time to establish RTMP connection.
+          # ----------------------------------------------------------
+
+          sleep 8
+
+
+          # ----------------------------------------------------------
+          # Verify FFmpeg is alive.
+          # ----------------------------------------------------------
+
+          if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+            echo
+            echo "ERROR: FFmpeg stopped unexpectedly."
+
+            tail -n 200 ffmpeg.log || true
+
+            exit 1
+          fi
+
+
+          echo
+          echo "FFmpeg is running."
+
+
+          # ==========================================================
+          # DISPATCH NEXT ACTION
+          # ==========================================================
+
+          echo
+          echo "========================================"
+          echo "DISPATCHING NEXT ACTION"
+          echo "========================================"
+
+          PAYLOAD=$(
+            python3 - "$NEXT_INDEX" "$NEXT_SEED" "$HANDOFF_AT" <<'PY'
+          import json
+          import sys
+
+          payload = {
+              "ref": "main",
+              "inputs": {
+                  "start_index": str(sys.argv[1]),
+                  "seed": str(sys.argv[2]),
+                  "handoff_at": str(sys.argv[3])
+              }
+          }
+
+          print(json.dumps(payload))
+          PY
+          )
+
+          echo "Next index: $NEXT_INDEX"
+          echo "Next seed:  $NEXT_SEED"
+          echo "Handoff at: $HANDOFF_AT"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream.yml/dispatches" \
+            -d "$PAYLOAD"
+
+          echo
+          echo "Next Action dispatched successfully."
+
+
+          # ==========================================================
+          # CURRENT ACTION KEEPS STREAMING
+          # ==========================================================
+
+          wait "$FFMPEG_PID"
+
+
+      # ============================================================
+      # SHOW FFMPEG LOG
+      # ============================================================
+
+      - name: Show FFmpeg log
+        if: always()
+        shell: bash
+        run: |
+          echo
+          echo "========================================"
+          echo "FFMPEG LOG"
+          echo "========================================"
+
+          if [ -f ffmpeg.log ]; then
+            tail -n 200 ffmpeg.log
+          else
+            echo "ffmpeg.log not found"
+          fi
