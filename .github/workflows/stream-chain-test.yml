@@ -156,7 +156,7 @@ jobs:
           PREP_LEAD=180
 
           # ONLY CHANGE:
-          OVERLAP=6
+          OVERLAP=8
 
           INPUT_HANDOFF="${{ inputs.handoff_epoch }}"
 
@@ -170,7 +170,7 @@ jobs:
 
           END_EPOCH=$((START_EPOCH + DURATION_INT))
 
-          # Next Action starts 6 seconds before current video ends
+          # Next Action starts 8 seconds before current video ends
           NEXT_START_EPOCH=$((END_EPOCH - OVERLAP))
 
           # Launch next Action 180 seconds before handoff
