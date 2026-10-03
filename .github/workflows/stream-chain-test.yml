@@ -154,9 +154,7 @@ jobs:
           set -e
 
           PREP_LEAD=180
-
-          # ONLY CHANGE:
-          OVERLAP=8
+          OVERLAP=6
 
           INPUT_HANDOFF="${{ inputs.handoff_epoch }}"
 
@@ -170,10 +168,8 @@ jobs:
 
           END_EPOCH=$((START_EPOCH + DURATION_INT))
 
-          # Next Action starts 8 seconds before current video ends
           NEXT_START_EPOCH=$((END_EPOCH - OVERLAP))
 
-          # Launch next Action 180 seconds before handoff
           DISPATCH_EPOCH=$((END_EPOCH - PREP_LEAD))
 
           NOW=$(date +%s)
@@ -230,6 +226,7 @@ jobs:
           "$HOME/ffmpeg/bin/ffmpeg" \
             -hide_banner \
             -loglevel info \
+            -fflags +genpts \
             -re \
             -i stream_video.mp4 \
             -map 0:v:0 \
