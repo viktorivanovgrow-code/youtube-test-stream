@@ -1,33 +1,21 @@
-name: YouTube Stream
+name: YouTube Stream Test
 
 on:
   workflow_dispatch:
-    inputs:
-      handoff_epoch:
-        description: "Unix timestamp when this video should start"
-        required: false
-        default: "0"
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
-  stream:
+  stream-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
 
-      # ---------------------------------------------------------
-      # CHECKOUT
-      # ---------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
-      # FFMPEG CACHE
-      # ---------------------------------------------------------
       - name: Restore FFmpeg cache
         id: ffmpeg-cache
         uses: actions/cache@v4
@@ -35,9 +23,6 @@ jobs:
           path: ~/ffmpeg
           key: ffmpeg-static-v2
 
-      # ---------------------------------------------------------
-      # INSTALL FFMPEG
-      # ---------------------------------------------------------
       - name: Install FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -54,9 +39,6 @@ jobs:
             --strip-components=1 \
             -C "$HOME/ffmpeg"
 
-      # ---------------------------------------------------------
-      # VERIFY FFMPEG
-      # ---------------------------------------------------------
       - name: Verify FFmpeg
         shell: bash
         run: |
@@ -65,282 +47,110 @@ jobs:
           "$HOME/ffmpeg/bin/ffmpeg" -version | head -n 1
           "$HOME/ffmpeg/bin/ffprobe" -version | head -n 1
 
-      # ---------------------------------------------------------
-      # RANDOM VIDEO
-      # ---------------------------------------------------------
-      - name: Select random video
+      - name: Download two test videos
         shell: bash
         run: |
           set -e
 
-          VIDEO_URL=$(python3 - <<'PY'
-          import json
-          import random
+          VIDEO1="https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Afro%20Elements%20-%20Chocolat%20%28Mr%20Gone%27s%20Club%20Sandwich%29.mp4"
 
-          with open("playlist.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
+          VIDEO2="https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Andy%20Caldwell%20-%20Live%20Your%20Life%20%28Fred%20Everything%20Mix%29.mp4"
 
-          playlist = data["videos"]
-
-          if not playlist:
-              raise RuntimeError("playlist.json: список videos пуст")
-
-          print(random.choice(playlist))
-          PY
-          )
-
-          echo "Selected video:"
-          echo "$VIDEO_URL"
-
-          echo "VIDEO_URL=$VIDEO_URL" >> "$GITHUB_ENV"
-
-      # ---------------------------------------------------------
-      # DOWNLOAD
-      # ---------------------------------------------------------
-      - name: Download video
-        shell: bash
-        run: |
-          set -e
-
-          echo "Downloading selected video..."
-
+          echo "Downloading Video 1..."
           wget \
             --progress=dot:giga \
-            -O stream_video.mp4 \
-            "$VIDEO_URL"
+            -O video1.mp4 \
+            "$VIDEO1"
 
-          echo "Download completed."
+          echo "Downloading Video 2..."
+          wget \
+            --progress=dot:giga \
+            -O video2.mp4 \
+            "$VIDEO2"
 
-          ls -lh stream_video.mp4
+          echo
+          echo "Downloaded files:"
+          ls -lh video1.mp4 video2.mp4
 
-      # ---------------------------------------------------------
-      # PROBE DURATION
-      # ---------------------------------------------------------
-      - name: Probe video
+      - name: Check stream compatibility
         shell: bash
         run: |
           set -e
 
-          DURATION=$(
-            "$HOME/ffmpeg/bin/ffprobe" \
-              -v error \
-              -show_entries format=duration \
-              -of default=noprint_wrappers=1:nokey=1 \
-              stream_video.mp4
-          )
+          echo "========== VIDEO 1 =========="
 
-          echo "Exact duration: $DURATION seconds"
+          "$HOME/ffmpeg/bin/ffprobe" \
+            -v error \
+            -select_streams v:0 \
+            -show_entries stream=codec_name,width,height,r_frame_rate,time_base,pix_fmt \
+            -of default=noprint_wrappers=1 \
+            video1.mp4
 
-          DURATION_INT=$(python3 - "$DURATION" <<'PY'
-          import sys
-          import math
+          "$HOME/ffmpeg/bin/ffprobe" \
+            -v error \
+            -select_streams a:0 \
+            -show_entries stream=codec_name,sample_rate,channels,time_base \
+            -of default=noprint_wrappers=1 \
+            video1.mp4
 
-          duration = float(sys.argv[1])
-          print(math.ceil(duration))
-          PY
-          )
+          echo
+          echo "========== VIDEO 2 =========="
 
-          echo "Rounded duration: $DURATION_INT seconds"
+          "$HOME/ffmpeg/bin/ffprobe" \
+            -v error \
+            -select_streams v:0 \
+            -show_entries stream=codec_name,width,height,r_frame_rate,time_base,pix_fmt \
+            -of default=noprint_wrappers=1 \
+            video2.mp4
 
-          echo "DURATION=$DURATION" >> "$GITHUB_ENV"
-          echo "DURATION_INT=$DURATION_INT" >> "$GITHUB_ENV"
+          "$HOME/ffmpeg/bin/ffprobe" \
+            -v error \
+            -select_streams a:0 \
+            -show_entries stream=codec_name,sample_rate,channels,time_base \
+            -of default=noprint_wrappers=1 \
+            video2.mp4
 
-      # ---------------------------------------------------------
-      # CALCULATE TIMING
-      # ---------------------------------------------------------
-      - name: Calculate timing
+      - name: Create concat list
         shell: bash
         run: |
           set -e
 
-          PREP_LEAD=180
-          OVERLAP=6
+          cat > concat.txt <<'EOF'
+          ffconcat version 1.0
+          file 'video1.mp4'
+          file 'video2.mp4'
+          EOF
 
-          INPUT_HANDOFF="${{ inputs.handoff_epoch }}"
+          echo "========== CONCAT LIST =========="
+          cat concat.txt
 
-          if [ "$INPUT_HANDOFF" = "0" ]; then
-            START_EPOCH=$(date +%s)
-            echo "First video."
-          else
-            START_EPOCH="$INPUT_HANDOFF"
-            echo "Scheduled handoff: $START_EPOCH"
-          fi
-
-          END_EPOCH=$((START_EPOCH + DURATION_INT))
-
-          NEXT_START_EPOCH=$((END_EPOCH - OVERLAP))
-
-          DISPATCH_EPOCH=$((END_EPOCH - PREP_LEAD))
-
-          NOW=$(date +%s)
-
-          if [ "$DISPATCH_EPOCH" -lt "$NOW" ]; then
-            DISPATCH_EPOCH="$NOW"
-          fi
-
-          echo "========================================"
-          echo "START_EPOCH:      $START_EPOCH"
-          echo "END_EPOCH:        $END_EPOCH"
-          echo "NEXT_START_EPOCH: $NEXT_START_EPOCH"
-          echo "DISPATCH_EPOCH:   $DISPATCH_EPOCH"
-          echo "PREP_LEAD:        $PREP_LEAD seconds"
-          echo "OVERLAP:          $OVERLAP seconds"
-          echo "========================================"
-
-          echo "START_EPOCH=$START_EPOCH" >> "$GITHUB_ENV"
-          echo "END_EPOCH=$END_EPOCH" >> "$GITHUB_ENV"
-          echo "NEXT_START_EPOCH=$NEXT_START_EPOCH" >> "$GITHUB_ENV"
-          echo "DISPATCH_EPOCH=$DISPATCH_EPOCH" >> "$GITHUB_ENV"
-
-      # ---------------------------------------------------------
-      # WAIT FOR START
-      # ---------------------------------------------------------
-      - name: Wait until start
-        shell: bash
-        run: |
-          set -e
-
-          NOW=$(date +%s)
-          WAIT=$((START_EPOCH - NOW))
-
-          if [ "$WAIT" -gt 0 ]; then
-            echo "Waiting $WAIT seconds..."
-            sleep "$WAIT"
-          fi
-
-          echo "Start time reached."
-
-      # ---------------------------------------------------------
-      # START FFMPEG
-      # ---------------------------------------------------------
-      - name: Start FFmpeg
-        shell: bash
+      - name: Start one continuous FFmpeg stream
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        shell: bash
         run: |
           set -e
 
-          echo "Starting FFmpeg..."
-          echo "Streaming to YouTube..."
+          echo "========================================"
+          echo "ONE FFMPEG"
+          echo "ONE RTMP CONNECTION"
+          echo "VIDEO 1 -> VIDEO 2"
+          echo "========================================"
 
           "$HOME/ffmpeg/bin/ffmpeg" \
             -hide_banner \
             -loglevel info \
-            -fflags +genpts \
             -re \
-            -i stream_video.mp4 \
+            -f concat \
+            -safe 0 \
+            -i concat.txt \
             -map 0:v:0 \
             -map 0:a:0 \
             -c copy \
             -f flv \
             "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
-            > ffmpeg.log 2>&1 &
+            > ffmpeg.log 2>&1
 
-          PID=$!
-
-          echo "$PID" > ffmpeg.pid
-
-          echo "FFmpeg PID: $PID"
-
-      # ---------------------------------------------------------
-      # WAIT UNTIL NEXT ACTION MUST BE STARTED
-      # ---------------------------------------------------------
-      - name: Wait until next Action
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -e
-
-          while true; do
-
-            NOW=$(date +%s)
-            REMAIN=$((DISPATCH_EPOCH - NOW))
-
-            if [ "$REMAIN" -le 0 ]; then
-              break
-            fi
-
-            if [ "$REMAIN" -gt 30 ]; then
-              sleep 20
-            else
-              sleep "$REMAIN"
-            fi
-
-          done
-
-          echo "========================================"
-          echo "Starting next Action"
-          echo "Next video start: $NEXT_START_EPOCH"
-          echo "========================================"
-
-          curl -sS \
-            -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
-            -d "{\"ref\":\"main\",\"inputs\":{\"handoff_epoch\":\"$NEXT_START_EPOCH\"}}"
-
-          echo
-          echo "Next Action dispatched."
-
-      # ---------------------------------------------------------
-      # WAIT UNTIL CURRENT VIDEO ENDS
-      # ---------------------------------------------------------
-      - name: Wait until video end
-        shell: bash
-        run: |
-          set -e
-
-          while true; do
-
-            NOW=$(date +%s)
-            REMAIN=$((END_EPOCH - NOW))
-
-            if [ "$REMAIN" -le 0 ]; then
-              break
-            fi
-
-            if [ "$REMAIN" -gt 30 ]; then
-              sleep 20
-            else
-              sleep "$REMAIN"
-            fi
-
-          done
-
-          echo "Current video finished."
-
-      # ---------------------------------------------------------
-      # STOP FFMPEG
-      # ---------------------------------------------------------
-      - name: Stop FFmpeg
-        shell: bash
-        run: |
-          set +e
-
-          if [ -f ffmpeg.pid ]; then
-
-            PID=$(cat ffmpeg.pid)
-
-            echo "Stopping FFmpeg PID $PID..."
-
-            kill "$PID" 2>/dev/null || true
-
-            sleep 2
-
-            if kill -0 "$PID" 2>/dev/null; then
-              echo "FFmpeg still running. Killing..."
-              kill -9 "$PID" 2>/dev/null || true
-            fi
-
-          fi
-
-      # ---------------------------------------------------------
-      # LOG
-      # ---------------------------------------------------------
       - name: Show FFmpeg log
         if: always()
         shell: bash
@@ -348,7 +158,7 @@ jobs:
           echo "========== FFMPEG LOG =========="
 
           if [ -f ffmpeg.log ]; then
-            tail -n 150 ffmpeg.log
+            tail -n 200 ffmpeg.log
           else
             echo "ffmpeg.log not found"
           fi
