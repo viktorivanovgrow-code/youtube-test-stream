@@ -67,11 +67,52 @@ jobs:
           MAX_RETRIES=30
 
           python3 <<'PY'
+                
           import json
-          import random
+          import os
+          import sys
 
-          with open("playlist.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
+          path = "playlist.json"
+
+          print(f"Working directory: {os.getcwd()}")
+          print(f"Playlist path: {os.path.abspath(path)}")
+
+          if not os.path.isfile(path):
+              sys.exit("ERROR: playlist.json not found in repository root.")
+
+          if os.path.getsize(path) == 0:
+              sys.exit("ERROR: playlist.json is empty (0 bytes).")
+
+          try:
+              with open(path, "r", encoding="utf-8-sig") as f:
+                  data = json.load(f)
+          except json.JSONDecodeError as e:
+              sys.exit(
+                  f"ERROR: playlist.json contains invalid JSON: "
+                  f"line {e.lineno}, column {e.colno}: {e.msg}"
+              )
+
+          videos = data.get("videos") if isinstance(data, dict) else None
+
+          if not isinstance(videos, list):
+              sys.exit('ERROR: playlist.json must contain a "videos" array.')
+
+          videos = [
+              url for url in videos
+              if isinstance(url, str) and url.startswith("https://")
+          ]
+
+          if len(videos) < 10:
+              sys.exit(
+                  f"ERROR: found only {len(videos)} valid video URLs; "
+                  "at least 10 are required."
+              )
+
+          with open("/tmp/master_playlist.json", "w", encoding="utf-8") as f:
+              json.dump(videos, f, ensure_ascii=False, indent=2)
+
+          print(f"Playlist JSON is valid. Video URLs: {len(videos)}")
+          PY
 
           videos = data["videos"]
 
