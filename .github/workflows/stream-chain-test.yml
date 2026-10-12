@@ -85,11 +85,11 @@ jobs:
 
           try:
               with open(path, "r", encoding="utf-8-sig") as f:
-                  raw = f.read().strip()
+                  data = json.load(f)
+          except json.JSONDecodeError as e:
+              sys.exit(
+                  f"ERROR: playlist.json contains invalid JSON: "
+                  f"line {e.lineno}, column {e.colno}: {e.msg}"
+              )
 
-              # Tolerate accidental Markdown code fences around the JSON.
-              lines = raw.splitlines()
-              if lines and lines[0].strip().lower() in ("```json", "```"):
-                  lines = lines[1:]
-              if lines and lines[-1].strip() == "```":
-                  lines = lines[:-1]
+          videos = data.get("videos") if isinstance(data, dict) else None
