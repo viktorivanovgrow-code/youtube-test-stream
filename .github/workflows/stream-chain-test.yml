@@ -1,120 +1,96 @@
-            START_EPOCH="$INPUT_HANDOFF"
+name: YouTube Stream
+
+on:
+  workflow_dispatch:
+    inputs:
+      handoff_epoch:
+        description: "Unix timestamp when this video block should start"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  stream:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache FFmpeg
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-static-v2
+
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -x "$HOME/ffmpeg/bin/ffmpeg" ]; then
+            mkdir -p "$HOME/ffmpeg"
+
+            wget -q --show-progress \
+              -O /tmp/ffmpeg.tar.xz \
+              https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+
+            tar -xJf /tmp/ffmpeg.tar.xz \
+              --strip-components=1 \
+              -C "$HOME/ffmpeg"
+
+            rm -f /tmp/ffmpeg.tar.xz
           fi
 
-          END_EPOCH=$((START_EPOCH + TOTAL_FLOOR))
-
-          echo "NOW_EPOCH=$NOW_EPOCH"
-          echo "START_EPOCH=$START_EPOCH"
-          echo "END_EPOCH=$END_EPOCH"
-          echo "BLOCK_DURATION=$TOTAL_FLOOR seconds"
-
-          echo "START_EPOCH=$START_EPOCH" >> "$GITHUB_ENV"
-          echo "END_EPOCH=$END_EPOCH" >> "$GITHUB_ENV"
-
-      - name: Wait until block start
+      - name: Verify FFmpeg
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          while true; do
-            NOW=$(date +%s)
-            REMAINING=$((START_EPOCH - NOW))
+          "$HOME/ffmpeg/bin/ffmpeg" -version | head -n 1
+          "$HOME/ffmpeg/bin/ffprobe" -version | head -n 1
 
-            if [ "$REMAINING" -le 0 ]; then
-              break
-            fi
-
-            echo "Waiting $REMAINING seconds until block start..."
-            sleep $(( REMAINING > 30 ? 30 : REMAINING ))
-          done
-
-      - name: Start FFmpeg stream
-        shell: bash
-        env:
-          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        run: |
-          set -euo pipefail
-
-          echo "Starting single FFmpeg process..."
-          echo "Block duration: $TOTAL_FLOOR seconds"
-          echo "Start epoch: $START_EPOCH"
-          echo "End epoch: $END_EPOCH"
-
-          "$HOME/ffmpeg/bin/ffmpeg" \
-            -hide_banner \
-            -loglevel info \
-            -re \
-            -f concat \
-            -safe 0 \
-            -i concat.txt \
-            -map 0:v:0 \
-            -map 0:a:0 \
-            -c copy \
-            -f flv \
-            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
-            > ffmpeg.log 2>&1 &
-
-          FFMPEG_PID=$!
-
-          echo "FFMPEG_PID=$FFMPEG_PID" >> "$GITHUB_ENV"
-
-          echo "FFmpeg started with PID $FFMPEG_PID"
-
-      - name: Dispatch next Action immediately
+      - name: Reserve random playlist of 10 videos
+        id: reserve_playlist
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          NEXT_START_EPOCH: ${{ env.END_EPOCH }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          echo "Dispatching next Action."
-          echo "Next block start epoch: $NEXT_START_EPOCH"
+          STATE_FILE="playlist_state.json"
+          PLAYLIST_FILE="playlist.json"
+          MAX_RETRIES=30
 
-          curl -sS \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
-            -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"handoff_epoch\":\"${NEXT_START_EPOCH}\"}}"
+          python3 <<'PY'
+          import json
+          import random
 
-          echo ""
-          echo "Next Action dispatched successfully."
+          with open("playlist.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
 
-      - name: Wait until block end
-        shell: bash
-        run: |
-          set -euo pipefail
+          videos = data["videos"]
 
-          while true; do
-            NOW=$(date +%s)
-            REMAINING=$((END_EPOCH - NOW))
+          if len(videos) < 10:
+              raise SystemExit(
+                  f"Playlist contains only {len(videos)} videos. "
+                  f"At least 10 are required."
+              )
 
-            if [ "$REMAINING" -le 0 ]; then
-              break
-            fi
+          with open("/tmp/master_playlist.json", "w", encoding="utf-8") as f:
+              json.dump(videos, f, ensure_ascii=False, indent=2)
+          PY
 
-            echo "Current block continues for $REMAINING seconds..."
-            sleep $(( REMAINING > 30 ? 30 : REMAINING ))
-          done
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Reservation attempt $attempt/$MAX_RETRIES"
 
-      - name: Stop FFmpeg
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -n "${FFMPEG_PID:-}" ] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
-            echo "Stopping FFmpeg PID $FFMPEG_PID..."
-            kill "$FFMPEG_PID" || true
-            wait "$FFMPEG_PID" || true
-          fi
-
-          echo ""
-          echo "========================================"
-          echo "LAST FFmpeg LOG"
-          echo "========================================"
-
-          if [ -f ffmpeg.log ]; then
-            tail -n 150 ffmpeg.log
-          fi
+            HTTP_CODE=$(curl -sS \
+              -o /tmp/state_response.json \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
