@@ -1,8 +1,0 @@
-{
-  "fallbacks": {
-    "ТОЧНЫЙ_ОСНОВНОЙ_URL_ИЗ_PLAYLIST": [
-      "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/BGB%20-%20That%20Human%20Feel.mp4",
-      "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Cooccer%20-%20The%20Trip.mp4"
-    ]
-  }
-}
