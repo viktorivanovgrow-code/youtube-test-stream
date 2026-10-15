@@ -1,7 +1,7 @@
 {
   "fallbacks": {
     "ТОЧНЫЙ_ОСНОВНОЙ_URL_ИЗ_PLAYLIST": [
-      "РЕЗЕРВНЫЙ_URL_1",
+      "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/BGB%20-%20That%20Human%20Feel.mp4",
       "РЕЗЕРВНЫЙ_URL_2"
     ]
   }
