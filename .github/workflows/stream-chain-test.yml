@@ -1,31 +1,64 @@
+name: YouTube Stream
 
-          echo "FFMPEG_PID=$FFMPEG_PID" >> "$GITHUB_ENV"
+on:
+  workflow_dispatch:
+    inputs:
+      handoff_epoch:
+        description: "Unix timestamp when this video block should start"
+        required: false
+        default: "0"
+      previous_run_id:
+        description: "ID of the previous streaming workflow run"
+        required: false
+        default: "0"
 
-          echo "FFmpeg started with PID $FFMPEG_PID"
+permissions:
+  contents: write
+  actions: write
 
-      - name: Dispatch next Action immediately
+jobs:
+  stream:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache FFmpeg
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-static-v2
+
+      - name: Install FFmpeg
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NEXT_START_EPOCH: ${{ env.END_EPOCH }}
         run: |
-          set -euo pipefail
+          set -e
 
-          echo "Dispatching next Action."
-          echo "Next block start epoch: $NEXT_START_EPOCH"
+          if [ ! -x "$HOME/ffmpeg/bin/ffmpeg" ]; then
+            mkdir -p "$HOME/ffmpeg"
 
-          curl -sS \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
-            -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"handoff_epoch\":\"${NEXT_START_EPOCH}\",\"previous_run_id\":\"${GITHUB_RUN_ID}\"}}"
+            wget -q --show-progress \
+              -O /tmp/ffmpeg.tar.xz \
+              https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
 
-          echo ""
-          echo "Next Action dispatched successfully."
+            tar -xJf /tmp/ffmpeg.tar.xz \
+              --strip-components=1 \
+              -C "$HOME/ffmpeg"
 
-      - name: Wait until next playlist is ready
+            rm -f /tmp/ffmpeg.tar.xz
+          fi
+
+      - name: Verify FFmpeg
+        shell: bash
+        run: |
+          set -e
+
+          "$HOME/ffmpeg/bin/ffmpeg" -version | head -n 1
+          "$HOME/ffmpeg/bin/ffprobe" -version | head -n 1
+
+      - name: Reserve random playlist of 10 videos
+        id: reserve_playlist
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,69 +66,31 @@
         run: |
           set -euo pipefail
 
-          READY_FILE="stream_ready.json"
+          STATE_FILE="playlist_state.json"
+          PLAYLIST_FILE="playlist.json"
+          MAX_RETRIES=30
 
-          echo "Current playlist will repeat as needed and remain active until the planned block end and the next playlist is ready."
-          NEXT_PLAYLIST_READY=0
-
-          while true; do
-            NOW=$(date +%s)
-
-            if [ "$NOW" -ge "$END_EPOCH" ] && [ "$NEXT_PLAYLIST_READY" -eq 1 ]; then
-              echo "Planned block end reached and next playlist is ready."
-              break
-            fi
-
-            HTTP_CODE=$(curl -sS \
-              -o /tmp/ready_poll_response.json \
-              -w "%{http_code}" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/contents/$READY_FILE")
-
-            if [ "$HTTP_CODE" = "200" ]; then
-              MATCH=$(python3 - <<'PY'
-          import base64
+          python3 <<'PY'
           import json
+          import random
 
-          with open("/tmp/ready_poll_response.json", "r", encoding="utf-8") as f:
-              response = json.load(f)
-          content = base64.b64decode(response["content"]).decode("utf-8")
-          marker = json.loads(content)
-          print("yes" if str(marker.get("previous_run_id")) == str(__import__("os").environ["GITHUB_RUN_ID"]) else "no")
-          PY
+          with open("playlist.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          videos = data["videos"]
+
+          if len(videos) < 10:
+              raise SystemExit(
+                  f"Playlist contains only {len(videos)} videos. "
+                  f"At least 10 are required."
               )
 
-              if [ "$MATCH" = "yes" ]; then
-                if [ "$NEXT_PLAYLIST_READY" -eq 0 ]; then
-                  echo "The next playlist is ready."
-                fi
-                NEXT_PLAYLIST_READY=1
-              fi
-            else
-              echo "Ready marker not available yet (HTTP $HTTP_CODE)."
-            fi
+          with open("/tmp/master_playlist.json", "w", encoding="utf-8") as f:
+              json.dump(videos, f, ensure_ascii=False, indent=2)
+          PY
 
-            sleep 10
-          done
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Reservation attempt $attempt/$MAX_RETRIES"
 
-      - name: Stop FFmpeg
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -n "${FFMPEG_PID:-}" ] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
-            echo "Stopping FFmpeg PID $FFMPEG_PID..."
-            kill "$FFMPEG_PID" || true
-            wait "$FFMPEG_PID" || true
-          fi
-
-          echo ""
-          echo "========================================"
-          echo "LAST FFmpeg LOG"
-          echo "========================================"
-
-          if [ -f ffmpeg.log ]; then
-            tail -n 150 ffmpeg.log
-          fi
+            HTTP_CODE=$(curl -sS \
+              -o /tmp/state_response.json \
