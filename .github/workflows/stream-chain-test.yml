@@ -85,7 +85,7 @@ jobs:
               json.dump(videos, f, ensure_ascii=False, indent=2)
           PY
 
-          for attempt in $(seq 1 $MAX_RETRIES); do
+          for attempt in $(seq 1 "$MAX_RETRIES"); do
             echo "Reservation attempt $attempt/$MAX_RETRIES"
 
             HTTP_CODE=$(curl -sS \
@@ -137,7 +137,7 @@ jobs:
           PY
 
             else
-              echo "Unexpected HTTP status: $HTTP_CODE"
+              echo "Failed to read playlist state. HTTP status: $HTTP_CODE"
               cat /tmp/state_response.json
               exit 1
             fi
@@ -152,49 +152,56 @@ jobs:
           with open("/tmp/current_state.json", "r", encoding="utf-8") as f:
               state = json.load(f)
 
-          # Remove duplicate URLs from the master playlist.
+          # Remove duplicates from the current master playlist.
           master = list(dict.fromkeys(master))
           master_set = set(master)
 
-          remaining = state.get("remaining", [])
-          cycle = state.get("cycle", 1)
+          # Keep only URLs that still exist in playlist.json.
+          original_remaining = state.get("remaining", [])
+          if not isinstance(original_remaining, list):
+              raise SystemExit("Invalid playlist state: 'remaining' must be a list.")
 
-          # Remove deleted videos and duplicate URLs from the queue.
           remaining = list(dict.fromkeys(
-              url for url in remaining if url in master_set
+              url for url in original_remaining if url in master_set
           ))
 
-          # Track URLs already known to the saved state.
-          # Legacy state files without "known" use the current queue
-          # as a baseline to avoid re-adding every previously played URL.
-          known = state.get("known")
+          cycle = state.get("cycle", 1)
+          if not isinstance(cycle, int) or cycle < 1:
+              cycle = 1
 
+          # Find URLs that were added to playlist.json since the last reservation.
+          known = state.get("known")
           if not isinstance(known, list):
+              # Legacy state fallback: do not re-add all previously played URLs.
               known = list(remaining)
 
           known_set = set(known)
-
-          # Add newly introduced URLs that were not previously known.
           new_videos = [
               url for url in master
               if url not in known_set
           ]
 
-          random.shuffle(new_videos)
-          remaining.extend(new_videos)
-
-          # Start a new cycle only when the queue is exhausted.
+          # If the queue is exhausted, start a fresh cycle using the
+          # current master playlist, including any newly added URLs.
           if not remaining:
-              if state.get("remaining", []) == []:
-                  cycle += 1
-
+              cycle += 1
               remaining = list(master)
               random.shuffle(remaining)
 
-          # Reserve up to 10 videos for this Action.
+          else:
+              # Insert newly added URLs at random positions among the
+              # unreserved videos without reordering the existing queue.
+              random.shuffle(new_videos)
+
+              for url in new_videos:
+                  position = random.randint(0, len(remaining))
+                  remaining.insert(position, url)
+
+          # Reserve up to 10 videos. The final block of a cycle may be shorter.
           selected = remaining[:10]
           new_remaining = remaining[10:]
 
+          # Randomize playback order inside this reserved block.
           random.shuffle(selected)
 
           new_state = {
@@ -221,9 +228,8 @@ jobs:
 
           print("")
           print(f"Current cycle: {cycle}")
-          print(f"New videos added to queue: {len(new_videos)}")
+          print(f"New videos detected: {len(new_videos)}")
           print(f"Remaining after reservation: {len(new_remaining)}")
-          print(f"Next cycle value: {cycle}")
           PY
 
             CONTENT_B64=$(base64 -w 0 /tmp/new_state.json)
@@ -235,7 +241,7 @@ jobs:
           import json
 
           payload = {
-              "message": "Reserve 10 videos for streaming Action #${GITHUB_RUN_NUMBER}",
+              "message": "Reserve videos for streaming Action #${GITHUB_RUN_NUMBER}",
               "content": "${CONTENT_B64}",
               "sha": "${SHA}",
               "branch": "${GITHUB_REF_NAME}"
@@ -275,21 +281,18 @@ jobs:
               break
             fi
 
-            if [ "$UPDATE_CODE" = "409" ]; then
-              echo "State changed concurrently. Retrying..."
+            if [ "$UPDATE_CODE" = "409" ] || [ "$UPDATE_CODE" = "422" ]; then
+              echo "State may have changed concurrently. Retrying..."
               sleep 2
               continue
             fi
 
-            echo "Unexpected update HTTP status: $UPDATE_CODE"
+            echo "Failed to update playlist state. HTTP status: $UPDATE_CODE"
             cat /tmp/update_response.json
             exit 1
-
           done
 
-          if [ "$attempt" = "$MAX_RETRIES" ] && \
-             [ "$UPDATE_CODE" != "200" ] && \
-             [ "$UPDATE_CODE" != "201" ]; then
+          if [ "$UPDATE_CODE" != "200" ] && [ "$UPDATE_CODE" != "201" ]; then
             echo "Failed to reserve playlist after $MAX_RETRIES attempts."
             exit 1
           fi
@@ -306,6 +309,9 @@ jobs:
               data = json.load(f)
 
           videos = data["videos"]
+
+          if not videos:
+              raise SystemExit("Selected playlist is empty.")
 
           for i, url in enumerate(videos, 1):
               print(f"{i:02d} {url}")
@@ -330,7 +336,7 @@ jobs:
           while IFS='|' read -r NUMBER FILENAME URL; do
             echo ""
             echo "========================================"
-            echo "Downloading video $NUMBER/10"
+            echo "Downloading video $NUMBER"
             echo "$FILENAME"
             echo "========================================"
 
@@ -338,6 +344,8 @@ jobs:
               --progress=dot:giga \
               -O "$FILENAME" \
               "$URL"
+
+            test -s "$FILENAME"
 
           done < /tmp/download_list.txt
 
@@ -366,7 +374,6 @@ jobs:
           echo "========================================"
 
           while IFS='|' read -r NUMBER FILENAME URL; do
-
             DURATION=$(
               "$HOME/ffmpeg/bin/ffprobe" \
                 -v error \
@@ -429,7 +436,6 @@ jobs:
           set -euo pipefail
 
           NOW_EPOCH=$(date +%s)
-
           INPUT_HANDOFF="${{ inputs.handoff_epoch }}"
 
           if [ -z "$INPUT_HANDOFF" ] || [ "$INPUT_HANDOFF" = "0" ]; then
@@ -508,16 +514,23 @@ jobs:
           echo "Dispatching next Action."
           echo "Next block start epoch: $NEXT_START_EPOCH"
 
-          curl -sS \
+          HTTP_CODE=$(curl -sS \
+            -o /tmp/dispatch_response.json \
+            -w "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
-            -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"handoff_epoch\":\"${NEXT_START_EPOCH}\"}}"
+            -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"handoff_epoch\":\"${NEXT_START_EPOCH}\"}}")
 
-          echo ""
-          echo "Next Action dispatched successfully."
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "Next Action dispatched successfully."
+          else
+            echo "Failed to dispatch next Action. HTTP status: $HTTP_CODE"
+            cat /tmp/dispatch_response.json
+            exit 1
+          fi
 
       - name: Wait until block end
         shell: bash
@@ -537,6 +550,7 @@ jobs:
           done
 
       - name: Stop FFmpeg
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
