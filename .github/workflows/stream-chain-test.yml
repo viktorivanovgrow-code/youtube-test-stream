@@ -1,3 +1,4 @@
+
 name: YouTube Stream
 
 on:
@@ -68,16 +69,15 @@ jobs:
 
           python3 <<'PY'
           import json
-          import random
 
           with open("playlist.json", "r", encoding="utf-8") as f:
               data = json.load(f)
 
-          videos = data["videos"]
+          videos = list(dict.fromkeys(data["videos"]))
 
           if len(videos) < 10:
               raise SystemExit(
-                  f"Playlist contains only {len(videos)} videos. "
+                  f"Playlist contains only {len(videos)} unique videos. "
                   f"At least 10 are required."
               )
 
@@ -117,16 +117,17 @@ jobs:
             elif [ "$HTTP_CODE" = "404" ]; then
               python3 <<'PY'
           import json
+          import random
 
           with open("/tmp/master_playlist.json", "r", encoding="utf-8") as f:
               videos = json.load(f)
 
-          import random
           random.shuffle(videos)
 
           state = {
               "cycle": 1,
-              "remaining": videos
+              "remaining": videos,
+              "known": videos
           }
 
           with open("/tmp/current_state.json", "w", encoding="utf-8") as f:
@@ -151,31 +152,55 @@ jobs:
           with open("/tmp/current_state.json", "r", encoding="utf-8") as f:
               state = json.load(f)
 
+          # Remove duplicate URLs from the master playlist.
+          master = list(dict.fromkeys(master))
+          master_set = set(master)
+
           remaining = state.get("remaining", [])
           cycle = state.get("cycle", 1)
 
-          # Remove invalid entries and duplicate URLs if playlist.json changed.
-          master = list(dict.fromkeys(master))
-          master_set = set(master)
-          remaining = list(dict.fromkeys(x for x in remaining if x in master_set))
+          # Remove deleted videos and duplicate URLs from the queue.
+          remaining = list(dict.fromkeys(
+              url for url in remaining if url in master_set
+          ))
 
-          # Never mix two cycles in one Action.
-          # Use only videos left in the current cycle, even if fewer than 10 remain.
-          # Start a new shuffled cycle only when the previous cycle is exhausted.
+          # Track URLs already known to the saved state.
+          # Legacy state files without "known" use the current queue
+          # as a baseline to avoid re-adding every previously played URL.
+          known = state.get("known")
+
+          if not isinstance(known, list):
+              known = list(remaining)
+
+          known_set = set(known)
+
+          # Add newly introduced URLs that were not previously known.
+          new_videos = [
+              url for url in master
+              if url not in known_set
+          ]
+
+          random.shuffle(new_videos)
+          remaining.extend(new_videos)
+
+          # Start a new cycle only when the queue is exhausted.
           if not remaining:
-              cycle += 1 if state.get("remaining") == [] and state.get("cycle", 1) > 0 else 0
+              if state.get("remaining", []) == []:
+                  cycle += 1
+
               remaining = list(master)
               random.shuffle(remaining)
 
+          # Reserve up to 10 videos for this Action.
           selected = remaining[:10]
           new_remaining = remaining[10:]
-          new_cycle = cycle
 
           random.shuffle(selected)
 
           new_state = {
-              "cycle": new_cycle,
-              "remaining": new_remaining
+              "cycle": cycle,
+              "remaining": new_remaining,
+              "known": master
           }
 
           with open("/tmp/new_state.json", "w", encoding="utf-8") as f:
@@ -196,8 +221,9 @@ jobs:
 
           print("")
           print(f"Current cycle: {cycle}")
+          print(f"New videos added to queue: {len(new_videos)}")
           print(f"Remaining after reservation: {len(new_remaining)}")
-          print(f"Next cycle value: {new_cycle}")
+          print(f"Next cycle value: {cycle}")
           PY
 
             CONTENT_B64=$(base64 -w 0 /tmp/new_state.json)
@@ -261,7 +287,9 @@ jobs:
 
           done
 
-          if [ "$attempt" = "$MAX_RETRIES" ]; then
+          if [ "$attempt" = "$MAX_RETRIES" ] && \
+             [ "$UPDATE_CODE" != "200" ] && \
+             [ "$UPDATE_CODE" != "201" ]; then
             echo "Failed to reserve playlist after $MAX_RETRIES attempts."
             exit 1
           fi
