@@ -1,13 +1,6 @@
 {
   "cycle": 2,
-  "remaining": [
-    "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Cloudsteppers%20-%20Make%20Me%20Shine%20%28The%20Disclosure%20Project%20Remix%29.mp4",
-    "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Manzel%20-%20It%27s%20Over%20Now%20%28Dopebrother%2012%20Inch%20Remix%29.mp4",
-    "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Soul%20Patrol%20-%20Keep%20It%20Country.mp4",
-    "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Frivolous%20-%20CJ%27s%20Turnin%27%20World.mp4",
-    "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Discorados%20-%20Get%20Down%20%28Phonicfood%60s%20Toca%20Disco%20Mix%29.mp4",
-    "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Cooccer%20-%20The%20Trip.mp4"
-  ],
+  "remaining": [],
   "known": [
     "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Afro%20Elements%20-%20Chocolat%20%28Mr%20Gone%27s%20Club%20Sandwich%29.mp4",
     "https://huggingface.co/datasets/djSultry/YouTube/resolve/main/Akabu%20-Your%20Wildest%20Dreams%20%28Joey%20Negro%20Medusa%20Mix%29.mp4",
