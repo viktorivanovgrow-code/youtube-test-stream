@@ -1,0 +1,164 @@
+name: Test Emergency Switch Logic (Isolated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      simulate_primary_failure:
+        description: "Force the synthetic primary download to fail and exercise the reserve path"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-switch-logic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg and jq
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Create isolated test queue and simulate primary reservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/emergency-switch-test
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('/tmp/emergency-switch-test')
+          primary = [f'https://primary.invalid/test-track-{i:02d}.mp4' for i in range(1, 11)]
+          remaining = [f'https://primary.invalid/test-track-{i:02d}.mp4' for i in range(11, 21)]
+          (root / 'selected_primary.json').write_text(json.dumps(primary, indent=2) + '\n')
+          (root / 'test_playlist_state.json').write_text(json.dumps({'cycle': 1, 'remaining': remaining}, indent=2) + '\n')
+          print(f'Created isolated fixtures: selected={len(primary)}, remaining={len(remaining)}')
+          print('No repository playlist_state.json was read or modified.')
+          PY
+
+      - name: Simulate failed primary download
+        if: ${{ inputs.simulate_primary_failure }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if curl -fLsS --connect-timeout 5 --max-time 10 \
+            'https://example.invalid/intentional-test-failure.mp4' \
+            -o /tmp/emergency-switch-test/primary.mp4; then
+            echo 'ERROR: expected synthetic primary failure, but download succeeded.'
+            exit 1
+          else
+            echo 'EXPECTED: synthetic primary failed; test will use Release reserve assets.'
+          fi
+
+      - name: Download and validate emergency Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/emergency-switch-test/reserve
+          api_url="https://api.github.com/repos/${GH_REPOSITORY}/releases/tags/backup-v1"
+          code=$(curl -sS -L --connect-timeout 20 --max-time 60 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -o /tmp/emergency-switch-test/release.json -w '%{http_code}' "$api_url")
+          if [ "$code" != 200 ]; then
+            echo "Release API returned HTTP $code"
+            cat /tmp/emergency-switch-test/release.json
+            exit 1
+          fi
+          jq -e '.draft == false and .prerelease == false' /tmp/emergency-switch-test/release.json >/dev/null
+          count=$(jq '[.assets[] | select(.name | endswith(".mp4"))] | length' /tmp/emergency-switch-test/release.json)
+          [ "$count" -eq 10 ] || { echo "Expected 10 MP4 assets, found $count"; exit 1; }
+          jq -r '.assets[] | select(.name | endswith(".mp4")) | [.name, .url, (.size|tostring)] | @tsv' /tmp/emergency-switch-test/release.json > /tmp/emergency-switch-test/assets.tsv
+          while IFS=$'\t' read -r name asset_url expected_size; do
+            out="/tmp/emergency-switch-test/reserve/$name"
+            echo "Downloading reserve asset: $name"
+            curl -fLsS --retry 3 --retry-all-errors --retry-delay 2 \
+              --connect-timeout 30 --max-time 900 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/octet-stream' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$asset_url" -o "$out"
+            [ -s "$out" ]
+            actual_size=$(stat -c '%s' "$out")
+            [ "$actual_size" -eq "$expected_size" ] || { echo "Size mismatch: $name"; exit 1; }
+            ffprobe -v error -select_streams v:0 -show_entries stream=index -of csv=p=0 "$out" | grep -q .
+            ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 "$out" | grep -q .
+            ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$out" >/dev/null
+            printf 'OK\t%s\t%s bytes\n' "$name" "$actual_size"
+          done < /tmp/emergency-switch-test/assets.tsv
+          echo 'All reserve assets are valid.'
+
+      - name: Exercise reserve selection and build a local concat list
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('/tmp/emergency-switch-test')
+          reserve = root / 'reserve'
+          files = sorted(p for p in reserve.glob('*.mp4') if p.is_file())
+          if len(files) != 10:
+              raise SystemExit(f'Expected 10 reserve files, found {len(files)}')
+          concat = root / 'concat.txt'
+          concat.write_text(''.join("file '" + str(p).replace("'", "'\\''") + "'\n" for p in files))
+          (root / 'selected_reserve.json').write_text(json.dumps([p.name for p in files], indent=2) + '\n')
+          print(f'Reserve selected: {len(files)} files')
+          print(f'Concat manifest created: {concat}')
+          print('No RTMP/YouTube connection is made in this test.')
+          PY
+          test "$(grep -c '^file ' /tmp/emergency-switch-test/concat.txt)" -eq 10
+          echo 'PASS: reserve selection and concat manifest contain all 10 files.'
+
+      - name: Test restoring primary URLs to an isolated queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('/tmp/emergency-switch-test')
+          selected = json.loads((root / 'selected_primary.json').read_text())
+          state_path = root / 'test_playlist_state.json'
+          state = json.loads(state_path.read_text())
+          before = list(state['remaining'])
+          # Mirror the intended restoration rule: put failed primary URLs at the front,
+          # preserve queued entries, and deduplicate without changing their order.
+          merged = []
+          seen = set()
+          for url in selected + before:
+              if url not in seen:
+                  seen.add(url)
+                  merged.append(url)
+          state['remaining'] = merged
+          state_path.write_text(json.dumps(state, indent=2) + '\n')
+          check = json.loads(state_path.read_text())
+          assert check['remaining'][:len(selected)] == selected, 'Primary URLs were not restored to the front.'
+          assert len(check['remaining']) == len(set(check['remaining'])), 'Duplicate URLs found after restoration.'
+          assert check['remaining'][len(selected):] == before, 'Existing queue order changed.'
+          print(f'PASS: restored {len(selected)} primary URLs to the front of isolated test state.')
+          print(f'PASS: preserved {len(before)} queued URLs and their order; no duplicates.')
+          print('Only /tmp/emergency-switch-test/test_playlist_state.json was changed.')
+          PY
+
+      - name: Final safety summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'PASS: emergency reserve download/validation, reserve selection, concat manifest, and isolated queue restoration all completed.'
+          echo 'SAFETY: no production playlist_state.json access; no repository writes; no automatic next Action; no YouTube RTMP connection.'
