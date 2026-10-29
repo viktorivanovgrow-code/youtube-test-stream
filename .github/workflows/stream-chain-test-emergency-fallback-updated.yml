@@ -1,0 +1,1024 @@
+
+name: YouTube Stream
+
+on:
+  workflow_dispatch:
+    inputs:
+      handoff_epoch:
+        description: "Unix timestamp when this video block should start"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  stream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache FFmpeg
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-static-v2
+
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -x "$HOME/ffmpeg/bin/ffmpeg" ] || \
+             [ ! -x "$HOME/ffmpeg/bin/ffprobe" ]; then
+            rm -rf "$HOME/ffmpeg"
+            mkdir -p "$HOME/ffmpeg"
+
+            curl -fL \
+              --retry 4 \
+              --retry-all-errors \
+              --retry-delay 3 \
+              --connect-timeout 30 \
+              --max-time 900 \
+              -o /tmp/ffmpeg.tar.xz \
+              https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+
+            tar -xJf /tmp/ffmpeg.tar.xz \
+              --strip-components=1 \
+              -C "$HOME/ffmpeg"
+
+            rm -f /tmp/ffmpeg.tar.xz
+          fi
+
+      - name: Verify FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$HOME/ffmpeg/bin/ffmpeg" -version | head -n 1
+          "$HOME/ffmpeg/bin/ffprobe" -version | head -n 1
+
+      - name: Reserve random playlist of 10 videos
+        id: reserve_playlist
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          STATE_FILE="playlist_state.json"
+          MAX_RETRIES=30
+
+          python3 <<'PY'
+          import json
+
+          with open("playlist.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          videos = list(dict.fromkeys(data["videos"]))
+
+          if len(videos) < 10:
+              raise SystemExit(
+                  f"Playlist contains only {len(videos)} unique videos."
+              )
+
+          with open("/tmp/master_playlist.json", "w", encoding="utf-8") as f:
+              json.dump(videos, f, ensure_ascii=False, indent=2)
+          PY
+
+          UPDATE_CODE="000"
+
+          for attempt in $(seq 1 "$MAX_RETRIES"); do
+            echo "Reservation attempt $attempt/$MAX_RETRIES"
+
+            HTTP_CODE=$(curl -sS \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -o /tmp/state_response.json \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$REPO/contents/$STATE_FILE") || true
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              python3 <<'PY'
+          import json
+          import base64
+
+          with open("/tmp/state_response.json", encoding="utf-8") as f:
+              response = json.load(f)
+
+          content = base64.b64decode(response["content"]).decode("utf-8")
+          state = json.loads(content)
+
+          with open("/tmp/current_state.json", "w", encoding="utf-8") as f:
+              json.dump(state, f, ensure_ascii=False, indent=2)
+
+          with open("/tmp/state_sha.txt", "w", encoding="utf-8") as f:
+              f.write(response["sha"])
+          PY
+
+            elif [ "$HTTP_CODE" = "404" ]; then
+              python3 <<'PY'
+          import json
+          import secrets
+
+          with open("/tmp/master_playlist.json", encoding="utf-8") as f:
+              videos = json.load(f)
+
+          secrets.SystemRandom().shuffle(videos)
+
+          state = {
+              "cycle": 1,
+              "remaining": videos,
+              "known": videos
+          }
+
+          with open("/tmp/current_state.json", "w", encoding="utf-8") as f:
+              json.dump(state, f, ensure_ascii=False, indent=2)
+
+          open("/tmp/state_sha.txt", "w").close()
+          PY
+
+            else
+              echo "Could not read playlist state. HTTP: $HTTP_CODE"
+              cat /tmp/state_response.json || true
+              exit 1
+            fi
+
+            python3 <<'PY'
+          import json
+          import secrets
+
+          rng = secrets.SystemRandom()
+
+          with open("/tmp/master_playlist.json", encoding="utf-8") as f:
+              master = list(dict.fromkeys(json.load(f)))
+
+          with open("/tmp/current_state.json", encoding="utf-8") as f:
+              state = json.load(f)
+
+          master_set = set(master)
+          original_remaining = state.get("remaining", [])
+
+          if not isinstance(original_remaining, list):
+              raise SystemExit("Invalid state: remaining must be a list.")
+
+          remaining = list(dict.fromkeys(
+              url for url in original_remaining if url in master_set
+          ))
+
+          cycle = state.get("cycle", 1)
+          if not isinstance(cycle, int) or cycle < 1:
+              cycle = 1
+
+          known = state.get("known")
+          if not isinstance(known, list):
+              known = list(remaining)
+
+          known_set = set(known)
+          new_videos = [url for url in master if url not in known_set]
+
+          if not remaining:
+              cycle += 1
+              remaining = list(master)
+              rng.shuffle(remaining)
+          else:
+              rng.shuffle(new_videos)
+              for url in new_videos:
+                  remaining.insert(secrets.randbelow(len(remaining) + 1), url)
+
+          # Re-shuffle the entire unreserved queue on every reservation.
+          # This prevents the same old queue order from persisting across Actions.
+          rng.shuffle(remaining)
+
+          selected = remaining[:10]
+          new_remaining = remaining[10:]
+          rng.shuffle(selected)
+
+          new_state = {
+              "cycle": cycle,
+              "remaining": new_remaining,
+              "known": master
+          }
+
+          with open("/tmp/new_state.json", "w", encoding="utf-8") as f:
+              json.dump(new_state, f, ensure_ascii=False, indent=2)
+
+          with open("selected_playlist.json", "w", encoding="utf-8") as f:
+              json.dump(
+                  {"videos": selected},
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+          print(f"Selected videos: {len(selected)}")
+          print(f"Cycle: {cycle}")
+          print(f"New videos detected: {len(new_videos)}")
+          print(f"Remaining after reservation: {len(new_remaining)}")
+
+          for i, url in enumerate(selected, 1):
+              print(f"{i:02d}. {url}")
+          PY
+
+            CONTENT_B64=$(base64 -w 0 /tmp/new_state.json)
+            SHA=""
+
+            if [ -s /tmp/state_sha.txt ]; then
+              SHA=$(cat /tmp/state_sha.txt)
+            fi
+
+            PAYLOAD=$(python3 - "$CONTENT_B64" "$SHA" <<'PY'
+          import json
+          import sys
+          import os
+
+          content, sha = sys.argv[1], sys.argv[2]
+
+          payload = {
+              "message": f"Reserve videos for streaming Action #{os.environ['GITHUB_RUN_NUMBER']}",
+              "content": content,
+              "branch": os.environ["GITHUB_REF_NAME"]
+          }
+
+          if sha:
+              payload["sha"] = sha
+
+          print(json.dumps(payload))
+          PY
+            )
+
+            UPDATE_CODE=$(curl -sS \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -o /tmp/update_response.json \
+              -w "%{http_code}" \
+              -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO/contents/$STATE_FILE" \
+              -d "$PAYLOAD") || UPDATE_CODE="000"
+
+            if [ "$UPDATE_CODE" = "200" ] || [ "$UPDATE_CODE" = "201" ]; then
+              echo "Playlist reservation committed."
+              break
+            fi
+
+            if [ "$UPDATE_CODE" = "409" ] || \
+               [ "$UPDATE_CODE" = "422" ] || \
+               [ "$UPDATE_CODE" = "000" ] || \
+               [ "$UPDATE_CODE" = "5" ]; then
+              echo "Reservation update failed or conflicted. Retrying..."
+              sleep 3
+              continue
+            fi
+
+            echo "Could not update playlist state. HTTP: $UPDATE_CODE"
+            cat /tmp/update_response.json || true
+            exit 1
+          done
+
+          if [ "$UPDATE_CODE" != "200" ] && [ "$UPDATE_CODE" != "201" ]; then
+            echo "Could not reserve playlist after $MAX_RETRIES attempts."
+            exit 1
+          fi
+
+      - name: Download and validate videos
+        id: download_videos
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "fallback_used=false" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "HF_TOKEN secret is empty or unavailable."
+            echo "Check repository Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          python3 <<'PY'
+          import json
+
+          with open("selected_playlist.json", encoding="utf-8") as f:
+              videos = json.load(f)["videos"]
+
+          if not videos:
+              raise SystemExit("Selected playlist is empty.")
+
+          with open("/tmp/download_list.txt", "w", encoding="utf-8") as f:
+              for i, url in enumerate(videos, 1):
+                  f.write(f"{i}|stream_video_{i:02d}.mp4|{url}\n")
+
+          print(f"Videos selected for download: {len(videos)}")
+          PY
+
+          retry_after_seconds() {
+            python3 - "$1" <<'PY'
+          import email.utils
+          import sys
+          from datetime import datetime, timezone
+
+          path = sys.argv[1]
+          value = None
+          try:
+              with open(path, "r", encoding="latin-1") as f:
+                  for line in f:
+                      if line.lower().startswith("retry-after:"):
+                          value = line.split(":", 1)[1].strip()
+          except OSError:
+              pass
+
+          if not value:
+              print(0)
+              raise SystemExit
+
+          try:
+              seconds = int(value)
+          except ValueError:
+              try:
+                  dt = email.utils.parsedate_to_datetime(value)
+                  if dt.tzinfo is None:
+                      dt = dt.replace(tzinfo=timezone.utc)
+                  seconds = int((dt - datetime.now(timezone.utc)).total_seconds())
+              except Exception:
+                  seconds = 0
+
+          print(max(0, min(seconds, 900)))
+          PY
+          }
+
+          validate_media() {
+            local file="$1"
+            local duration_file="$2"
+
+            "$HOME/ffmpeg/bin/ffprobe" \
+              -v error \
+              -show_entries format=duration \
+              -of default=noprint_wrappers=1:nokey=1 \
+              "$file" > "$duration_file" || return 1
+
+            python3 -c \
+              'import sys; d=float(sys.argv[1]); sys.exit(0 if d > 0 else 1)' \
+              "$(cat "$duration_file")" || return 1
+
+            "$HOME/ffmpeg/bin/ffprobe" \
+              -v error \
+              -select_streams v:0 \
+              -show_entries stream=codec_type \
+              -of csv=p=0 \
+              "$file" | grep -q video || return 1
+
+            "$HOME/ffmpeg/bin/ffprobe" \
+              -v error \
+              -select_streams a:0 \
+              -show_entries stream=codec_type \
+              -of csv=p=0 \
+              "$file" | grep -q audio || return 1
+          }
+
+          rm -f concat.txt
+
+          while IFS='|' read -r NUMBER FILENAME URL; do
+            echo ""
+            echo "========================================"
+            echo "Video $NUMBER: $FILENAME"
+            echo "========================================"
+
+            SUCCESS=0
+            PART="${FILENAME}.part"
+            HEADERS="/tmp/hf_headers_${NUMBER}.txt"
+
+            for attempt in 1 2 3 4 5 6; do
+              echo "Download attempt $attempt/6"
+              rm -f "$FILENAME" "$PART" "$HEADERS"
+              HTTP_CODE="000"
+              CURL_CODE=0
+
+              HTTP_CODE=$(curl -sS -L \
+                --connect-timeout 30 \
+                --max-time 1800 \
+                --dump-header "$HEADERS" \
+                --output "$PART" \
+                --write-out "%{http_code}" \
+                -H "Authorization: Bearer ${HF_TOKEN}" \
+                "$URL") || CURL_CODE=$?
+
+              if [ "$CURL_CODE" -eq 0 ] && \
+                 [[ "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]] && \
+                 test -s "$PART" && \
+                 mv "$PART" "$FILENAME"; then
+
+                if validate_media "$FILENAME" "/tmp/current_duration_${NUMBER}.txt"; then
+                  SUCCESS=1
+                  echo "Download and media validation successful."
+                  break
+                fi
+
+                echo "Downloaded file failed media validation."
+                rm -f "$FILENAME" "$PART"
+                WAIT_SECONDS=10
+              else
+                echo "Download failed. HTTP status: $HTTP_CODE; curl exit: $CURL_CODE"
+                rm -f "$FILENAME" "$PART"
+
+                if [ "$HTTP_CODE" = "429" ]; then
+                  WAIT_SECONDS=$(retry_after_seconds "$HEADERS")
+                  if [ "$WAIT_SECONDS" -le 0 ]; then
+                    WAIT_SECONDS=$((60 * (2 ** (attempt - 1))))
+                  fi
+                  echo "Hugging Face rate limit (429). Waiting ${WAIT_SECONDS}s before retry."
+                elif [[ "$HTTP_CODE" =~ ^5[0-9][0-9]$ ]] || [ "$HTTP_CODE" = "000" ]; then
+                  WAIT_SECONDS=$((30 * (2 ** (attempt - 1))))
+                  if [ "$WAIT_SECONDS" -gt 600 ]; then WAIT_SECONDS=600; fi
+                  echo "Temporary server/network error. Waiting ${WAIT_SECONDS}s before retry."
+                else
+                  WAIT_SECONDS=$((10 * attempt))
+                  echo "Non-rate-limit HTTP error. Waiting ${WAIT_SECONDS}s before retry."
+                fi
+              fi
+
+              if [ "$attempt" -lt 6 ]; then
+                sleep "$WAIT_SECONDS"
+              fi
+            done
+
+            if [ "$SUCCESS" -ne 1 ]; then
+              echo "ERROR: Primary video $NUMBER failed after 6 attempts."
+              echo "Switching to emergency Release backup."
+              PRIMARY_FAILED=1
+              break
+            fi
+
+          done < /tmp/download_list.txt
+
+          if [ "${PRIMARY_FAILED:-0}" -eq 1 ]; then
+            echo "fallback_used=true" >> "$GITHUB_OUTPUT"
+            echo "Loading emergency asset metadata from Release backup-v1..."
+
+            RELEASE_API="https://api.github.com/repos/${GH_REPOSITORY}/releases/tags/backup-v1"
+            RELEASE_HTTP=$(curl -sS -L \
+              --connect-timeout 20 --max-time 60 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o /tmp/emergency_release.json \
+              -w "%{http_code}" "$RELEASE_API") || RELEASE_HTTP="000"
+
+            if [ "$RELEASE_HTTP" != "200" ]; then
+              echo "ERROR: Could not read Release backup-v1 (HTTP $RELEASE_HTTP)."
+              cat /tmp/emergency_release.json || true
+              exit 1
+            fi
+
+            python3 <<'PY'
+          import json
+
+          with open("/tmp/emergency_release.json", encoding="utf-8") as f:
+              release = json.load(f)
+
+          if release.get("draft") or release.get("prerelease"):
+              raise SystemExit("Emergency Release must be published and not a prerelease.")
+
+          expected = [
+              "Britta.Arnold.-.Chicken.Curry.Ruede.Hagelstein.Hospital.Curry.Remix.mp4",
+              "Budai.Vic.-.Luv.U.Andro.Remix.mp4",
+              "Ciudad.Feliz.-.Life.Is.So.Amazing.mp4",
+              "Cloudsteppers.-.Make.Me.Shine.Jon.Silva.s.Soda.Inc.Remix.mp4",
+              "Danny.Daze.Matches.-.If.This.Original.Mix.mp4",
+              "Dublex.Inc.-.Rhodes.Knight.mp4",
+              "Jeremy.-.Soul.Kicks.mp4",
+              "Rene.Breitbarth.-.Aquaplaning.mp4",
+              "Roberto.Bardini.-.Never.Dubitate.mp4",
+              "Tan.Atalar.-.Kool.Customer.mp4",
+          ]
+          assets = {a.get("name"): a for a in release.get("assets", [])}
+          missing = [name for name in expected if name not in assets]
+          if missing:
+              raise SystemExit("Missing emergency assets: " + ", ".join(missing))
+
+          with open("/tmp/download_list.txt", "w", encoding="utf-8") as out:
+              for i, name in enumerate(expected, 1):
+                  asset = assets[name]
+                  if asset.get("content_type") != "video/mp4":
+                      raise SystemExit(f"Unexpected content type for {name}: {asset.get('content_type')}")
+                  out.write(f"{i}|stream_video_{i:02d}.mp4|{asset['url']}|{asset['size']}|{name}\\n")
+
+          print("Emergency Release assets found: 10")
+          PY
+
+            rm -f stream_video_*.mp4 stream_video_*.mp4.part concat.txt
+
+            while IFS='|' read -r NUMBER FILENAME ASSET_API_URL EXPECTED_SIZE ASSET_NAME; do
+              echo "Downloading emergency video $NUMBER: $ASSET_NAME"
+              SUCCESS=0
+
+              for attempt in 1 2 3 4; do
+                rm -f "$FILENAME" "${FILENAME}.part"
+                echo "Emergency download attempt $attempt/4"
+
+                if curl -fLsS \
+                  --retry 3 --retry-all-errors --retry-delay 2 \
+                  --connect-timeout 30 --max-time 900 \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "Accept: application/octet-stream" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  "$ASSET_API_URL" -o "${FILENAME}.part" &&
+                  test -s "${FILENAME}.part"; then
+
+                  ACTUAL_SIZE=$(stat -c '%s' "${FILENAME}.part")
+                  if [ "$ACTUAL_SIZE" = "$EXPECTED_SIZE" ] &&
+                     mv "${FILENAME}.part" "$FILENAME" &&
+                     validate_media "$FILENAME" "/tmp/emergency_duration_${NUMBER}.txt"; then
+                    SUCCESS=1
+                    echo "Emergency video $NUMBER downloaded and validated."
+                    break
+                  fi
+                  echo "Emergency asset size or media validation failed."
+                fi
+
+                rm -f "$FILENAME" "${FILENAME}.part"
+                if [ "$attempt" -lt 4 ]; then sleep 5; fi
+              done
+
+              if [ "$SUCCESS" -ne 1 ]; then
+                echo "ERROR: Emergency asset failed after 4 attempts: $ASSET_NAME"
+                exit 1
+              fi
+            done < /tmp/download_list.txt
+
+            python3 <<'PY'
+          import os
+
+          with open("/tmp/download_list.txt", encoding="utf-8") as f:
+              rows = [line.rstrip("\\n").split("|") for line in f]
+
+          with open("/tmp/download_list_normalized.txt", "w", encoding="utf-8") as f:
+              for number, filename, asset_url, _size, _name in rows:
+                  f.write(f"{number}|{filename}|{asset_url}\\n")
+
+          os.replace("/tmp/download_list_normalized.txt", "/tmp/download_list.txt")
+          PY
+          fi
+
+          echo ""
+          echo "Creating concat list..."
+
+          while IFS='|' read -r NUMBER FILENAME URL; do
+            REALPATH="$(realpath "$FILENAME")"
+            printf "file '%s'\n" "$REALPATH" >> concat.txt
+          done < /tmp/download_list.txt
+
+          cat concat.txt
+
+      - name: Probe playlist durations
+        id: durations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOTAL_EXACT=0
+
+          while IFS='|' read -r NUMBER FILENAME URL; do
+            DURATION=$(
+              "$HOME/ffmpeg/bin/ffprobe" \
+                -v error \
+                -show_entries format=duration \
+                -of default=noprint_wrappers=1:nokey=1 \
+                "$FILENAME"
+            )
+
+            python3 - "$DURATION" <<'PY'
+          import sys
+          duration = float(sys.argv[1])
+          if duration <= 0:
+              raise SystemExit("Invalid media duration.")
+          PY
+
+            TOTAL_EXACT=$(python3 - "$TOTAL_EXACT" "$DURATION" <<'PY'
+          import sys
+          print(float(sys.argv[1]) + float(sys.argv[2]))
+          PY
+            )
+          done < /tmp/download_list.txt
+
+          TOTAL_FLOOR=$(python3 - "$TOTAL_EXACT" <<'PY'
+          import sys
+          import math
+          print(math.floor(float(sys.argv[1])))
+          PY
+          )
+
+          if [ "$TOTAL_FLOOR" -lt 60 ]; then
+            echo "Total playlist duration is unexpectedly short."
+            exit 1
+          fi
+
+          echo "Total duration: $TOTAL_EXACT seconds"
+          echo "Duration used for timing: $TOTAL_FLOOR seconds"
+
+          echo "TOTAL_EXACT=$TOTAL_EXACT" >> "$GITHUB_ENV"
+          echo "TOTAL_FLOOR=$TOTAL_FLOOR" >> "$GITHUB_ENV"
+
+      - name: Calculate block start
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NOW_EPOCH=$(date +%s)
+          INPUT_HANDOFF="${{ inputs.handoff_epoch }}"
+
+          if [ -z "$INPUT_HANDOFF" ] || [ "$INPUT_HANDOFF" = "0" ]; then
+            START_EPOCH="$NOW_EPOCH"
+          else
+            START_EPOCH="$INPUT_HANDOFF"
+          fi
+
+          echo "Scheduled start: $START_EPOCH"
+          echo "Current time: $NOW_EPOCH"
+          echo "Block duration: $TOTAL_FLOOR seconds"
+
+          echo "START_EPOCH=$START_EPOCH" >> "$GITHUB_ENV"
+
+      - name: Wait until block start
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while true; do
+            NOW=$(date +%s)
+            REMAINING=$((START_EPOCH - NOW))
+
+            if [ "$REMAINING" -le 0 ]; then
+              break
+            fi
+
+            echo "Waiting $REMAINING seconds until block start..."
+            sleep $(( REMAINING > 30 ? 30 : REMAINING ))
+          done
+
+      - name: Start FFmpeg stream
+        id: start_ffmpeg
+        shell: bash
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${YOUTUBE_STREAM_KEY:-}" ]; then
+            echo "YOUTUBE_STREAM_KEY secret is missing."
+            exit 1
+          fi
+
+          echo "Starting FFmpeg..."
+          rm -f ffmpeg.log /tmp/ffmpeg.pid
+
+          ACTUAL_START=$(date +%s)
+
+          "$HOME/ffmpeg/bin/ffmpeg" \
+            -hide_banner \
+            -loglevel info \
+            -re \
+            -f concat \
+            -safe 0 \
+            -i concat.txt \
+            -map 0:v:0 \
+            -map 0:a:0 \
+            -c copy \
+            -f flv \
+            "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+            > ffmpeg.log 2>&1 &
+
+          FFMPEG_PID=$!
+          echo "$FFMPEG_PID" > /tmp/ffmpeg.pid
+
+          echo "FFmpeg PID: $FFMPEG_PID"
+
+          sleep 8
+
+          if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+            echo "FFmpeg exited during startup."
+            tail -n 100 ffmpeg.log || true
+            exit 1
+          fi
+
+          END_EPOCH=$((ACTUAL_START + TOTAL_FLOOR))
+
+          echo "START_EPOCH=$ACTUAL_START" >> "$GITHUB_ENV"
+          echo "END_EPOCH=$END_EPOCH" >> "$GITHUB_ENV"
+
+          echo "Stream started."
+          echo "Block end epoch: $END_EPOCH"
+
+      - name: Dispatch next Action
+        id: dispatch_next
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+
+          SUCCESS=0
+
+          for attempt in 1 2 3 4 5; do
+            echo "Dispatch attempt $attempt/5"
+            echo "Next block start: $END_EPOCH"
+
+            HTTP_CODE=$(curl -sS \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -o /tmp/dispatch_response.json \
+              -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
+              -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"handoff_epoch\":\"${END_EPOCH}\"}}") || HTTP_CODE="000"
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "Next Action dispatched successfully."
+              SUCCESS=1
+              break
+            fi
+
+            echo "Dispatch failed. HTTP: $HTTP_CODE"
+            cat /tmp/dispatch_response.json || true
+            sleep 5
+          done
+
+          echo "dispatch_ok=$SUCCESS" >> "$GITHUB_OUTPUT"
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "WARNING: Could not dispatch next Action yet."
+            echo "Current stream will continue until its scheduled end."
+          fi
+
+      - name: Retry dispatch if initial dispatch failed
+        if: always() && steps.start_ffmpeg.outcome == 'success' && steps.dispatch_next.outputs.dispatch_ok != '1'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+
+          for attempt in 1 2 3 4 5; do
+            echo "Final dispatch retry $attempt/5"
+
+            HTTP_CODE=$(curl -sS \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -o /tmp/dispatch_retry_response.json \
+              -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/stream-chain-test.yml/dispatches" \
+              -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"handoff_epoch\":\"${END_EPOCH}\"}}") || HTTP_CODE="000"
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "Next Action dispatched successfully on retry."
+              exit 0
+            fi
+
+            echo "Retry failed. HTTP: $HTTP_CODE"
+            cat /tmp/dispatch_retry_response.json || true
+            sleep 5
+          done
+
+          echo "WARNING: All dispatch retries failed."
+          echo "An independent watchdog is needed to recover if this persists."
+
+      - name: Monitor stream and recover FFmpeg if it exits
+        shell: bash
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          set -euo pipefail
+
+          RESTARTS=0
+          MAX_RESTARTS=2
+
+          while true; do
+            NOW=$(date +%s)
+            REMAINING=$((END_EPOCH - NOW))
+
+            if [ "$REMAINING" -le 0 ]; then
+              echo "Scheduled block end reached."
+              break
+            fi
+
+            if [ ! -s /tmp/ffmpeg.pid ]; then
+              echo "FFmpeg PID file is missing."
+              break
+            fi
+
+            FFMPEG_PID=$(cat /tmp/ffmpeg.pid)
+
+            if kill -0 "$FFMPEG_PID" 2>/dev/null; then
+              sleep $(( REMAINING > 10 ? 10 : REMAINING ))
+              continue
+            fi
+
+            echo "FFmpeg exited unexpectedly."
+            tail -n 100 ffmpeg.log || true
+
+            if [ "$RESTARTS" -ge "$MAX_RESTARTS" ] || \
+               [ "$REMAINING" -lt 60 ]; then
+              echo "Automatic FFmpeg restart limit reached."
+              break
+            fi
+
+            RESTARTS=$((RESTARTS + 1))
+            echo "Restarting FFmpeg ($RESTARTS/$MAX_RESTARTS)..."
+
+            "$HOME/ffmpeg/bin/ffmpeg" \
+              -hide_banner \
+              -loglevel info \
+              -re \
+              -f concat \
+              -safe 0 \
+              -i concat.txt \
+              -map 0:v:0 \
+              -map 0:a:0 \
+              -c copy \
+              -f flv \
+              "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}" \
+              >> ffmpeg.log 2>&1 &
+
+            FFMPEG_PID=$!
+            echo "$FFMPEG_PID" > /tmp/ffmpeg.pid
+
+            sleep 8
+
+            if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+              echo "FFmpeg restart failed."
+              tail -n 100 ffmpeg.log || true
+            fi
+          done
+
+      - name: Restore reserved videos if FFmpeg never started
+        if: always() && steps.reserve_playlist.outcome == 'success' && (steps.start_ffmpeg.outcome != 'success' || steps.download_videos.outputs.fallback_used == 'true')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s selected_playlist.json ]; then
+            echo "No reserved playlist file to restore."
+            exit 0
+          fi
+
+          STATE_FILE="playlist_state.json"
+          MAX_RETRIES=15
+
+          python3 <<'PY'
+          import json
+
+          with open("selected_playlist.json", encoding="utf-8") as f:
+              selected = json.load(f).get("videos", [])
+
+          with open("/tmp/selected_to_restore.json", "w", encoding="utf-8") as f:
+              json.dump(selected, f, ensure_ascii=False)
+          PY
+
+          for attempt in $(seq 1 "$MAX_RETRIES"); do
+            echo "Queue restoration attempt $attempt/$MAX_RETRIES"
+
+            HTTP_CODE=$(curl -sS \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -o /tmp/restore_state_response.json \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$REPO/contents/$STATE_FILE") || HTTP_CODE="000"
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "Could not read current state. HTTP: $HTTP_CODE"
+              sleep 3
+              continue
+            fi
+
+            python3 <<'PY'
+          import json
+          import base64
+
+          with open("/tmp/restore_state_response.json", encoding="utf-8") as f:
+              response = json.load(f)
+
+          state = json.loads(
+              base64.b64decode(response["content"]).decode("utf-8")
+          )
+
+          with open("/tmp/selected_to_restore.json", encoding="utf-8") as f:
+              selected = json.load(f)
+
+          remaining = state.get("remaining", [])
+          if not isinstance(remaining, list):
+              raise SystemExit("Current remaining queue is invalid.")
+
+          # Merge with the latest state so concurrent reservations are retained.
+          restored = []
+          seen = set()
+
+          for url in selected + remaining:
+              if url not in seen:
+                  restored.append(url)
+                  seen.add(url)
+
+          state["remaining"] = restored
+
+          with open("/tmp/restore_payload_data.json", "w", encoding="utf-8") as f:
+              json.dump(state, f, ensure_ascii=False, indent=2)
+
+          with open("/tmp/restore_sha.txt", "w", encoding="utf-8") as f:
+              f.write(response["sha"])
+          PY
+
+            CONTENT_B64=$(base64 -w 0 /tmp/restore_payload_data.json)
+            SHA=$(cat /tmp/restore_sha.txt)
+
+            PAYLOAD=$(python3 - "$CONTENT_B64" "$SHA" <<'PY'
+          import json
+          import sys
+          import os
+
+          print(json.dumps({
+              "message": f"Restore unstarted videos after Action #{os.environ['GITHUB_RUN_NUMBER']}",
+              "content": sys.argv[1],
+              "sha": sys.argv[2],
+              "branch": os.environ["GITHUB_REF_NAME"]
+          }))
+          PY
+            )
+
+            UPDATE_CODE=$(curl -sS \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -o /tmp/restore_update_response.json \
+              -w "%{http_code}" \
+              -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO/contents/$STATE_FILE" \
+              -d "$PAYLOAD") || UPDATE_CODE="000"
+
+            if [ "$UPDATE_CODE" = "200" ] || [ "$UPDATE_CODE" = "201" ]; then
+              echo "Reserved videos restored to the front of the queue."
+              exit 0
+            fi
+
+            echo "Restore update failed. HTTP: $UPDATE_CODE"
+            cat /tmp/restore_update_response.json || true
+            sleep 3
+          done
+
+          echo "WARNING: Queue restoration failed after all attempts."
+
+      - name: Stop FFmpeg and print logs
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          if [ -s /tmp/ffmpeg.pid ]; then
+            FFMPEG_PID=$(cat /tmp/ffmpeg.pid)
+
+            if kill -0 "$FFMPEG_PID" 2>/dev/null; then
+              echo "Stopping FFmpeg PID $FFMPEG_PID..."
+              kill "$FFMPEG_PID" 2>/dev/null
+              sleep 3
+
+              if kill -0 "$FFMPEG_PID" 2>/dev/null; then
+                kill -9 "$FFMPEG_PID" 2>/dev/null
+              fi
+            fi
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "LAST FFmpeg LOG"
+          echo "========================================"
+
+          if [ -f ffmpeg.log ]; then
+            tail -n 150 ffmpeg.log
+          fi
