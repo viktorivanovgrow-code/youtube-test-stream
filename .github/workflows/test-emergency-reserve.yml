@@ -1,0 +1,113 @@
+name: Test Emergency Video Reserve (No Stream)
+
+on:
+  workflow_dispatch:
+    inputs:
+      simulate_primary_failure:
+        description: "Simulate a failed primary video download to test the reserve"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-reserve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Simulate primary failure (no production playlist access)
+        if: ${{ inputs.simulate_primary_failure }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Deliberately use an invalid URL only in this isolated test job.
+          if curl -fL --connect-timeout 10 --max-time 20 \
+            "https://example.invalid/intentional-test-failure.mp4" \
+            -o /tmp/primary_test.mp4; then
+            echo "Unexpectedly downloaded the deliberately invalid test URL."
+            exit 1
+          else
+            echo "EXPECTED: primary download failed; proceeding to reserve test."
+          fi
+
+      - name: Download and validate all emergency Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/emergency-reserve
+
+          API_URL="https://api.github.com/repos/${GH_REPOSITORY}/releases/tags/backup-v1"
+          HTTP_CODE=$(curl -sS -L \
+            --connect-timeout 20 --max-time 60 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o /tmp/release.json -w '%{http_code}' "$API_URL")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Could not read release backup-v1 (HTTP $HTTP_CODE)."
+            cat /tmp/release.json
+            exit 1
+          fi
+
+          jq -e '.draft == false and .prerelease == false and (.assets | length >= 10)' /tmp/release.json >/dev/null
+          ASSET_COUNT=$(jq '[.assets[] | select(.name | endswith(".mp4"))] | length' /tmp/release.json)
+          if [ "$ASSET_COUNT" -ne 10 ]; then
+            echo "Expected exactly 10 MP4 assets, found $ASSET_COUNT."
+            jq -r '.assets[] | [.name, .content_type, .size] | @tsv' /tmp/release.json
+            exit 1
+          fi
+
+          jq -r '.assets[] | select(.name | endswith(".mp4")) | [.name, .url, .browser_download_url] | @tsv' /tmp/release.json > /tmp/assets.tsv
+
+          while IFS=$'\t' read -r name asset_api_url browser_url; do
+            echo "Downloading: $name"
+            output="/tmp/emergency-reserve/$name"
+
+            # GitHub Release assets are downloaded through the authenticated API.
+            curl -fLsS \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --connect-timeout 30 --max-time 900 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$asset_api_url" -o "$output"
+
+            test -s "$output"
+            actual_size=$(stat -c '%s' "$output")
+            expected_size=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .size' /tmp/release.json)
+            if [ "$actual_size" -ne "$expected_size" ]; then
+              echo "Size mismatch for $name: expected $expected_size, got $actual_size"
+              exit 1
+            fi
+
+            duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$output")
+            video_streams=$(ffprobe -v error -select_streams v:0 -show_entries stream=index -of csv=p=0 "$output" | wc -l)
+            audio_streams=$(ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 "$output" | wc -l)
+            if [ "$video_streams" -lt 1 ] || [ "$audio_streams" -lt 1 ]; then
+              echo "Missing video or audio stream in $name"
+              exit 1
+            fi
+            printf 'OK\t%s\t%s bytes\t%s seconds\n' "$name" "$actual_size" "$duration"
+          done < /tmp/assets.tsv
+
+          echo "All 10 emergency assets downloaded and passed ffprobe validation."
+          echo "Safety check: this test did not read or write playlist_state.json, did not reserve production videos, did not dispatch another Action, and did not connect to YouTube RTMP."
