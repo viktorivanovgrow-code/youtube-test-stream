@@ -1,5 +1,5 @@
 
-name: YouTube Stream 2
+name: YouTube Stream
 
 on:
   workflow_dispatch:
